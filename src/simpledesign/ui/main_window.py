@@ -27,6 +27,12 @@ from simpledesign.ui.materials_dialog import MaterialsDialog
 from simpledesign.ui.parameters_panel import ParametersPanel
 from simpledesign.ui.properties_panel import PropertiesPanel
 from simpledesign.ui.scene import Scene
+from simpledesign.ui.settings_dialog import (
+    Preferences,
+    SettingsDialog,
+    ShortcutsDialog,
+    apply_saved_shortcuts,
+)
 from simpledesign.ui.sketch_editor import NewPartEditor, new_sketch_part
 from simpledesign.ui.templates_dialog import InsertTemplateDialog, insert_template
 from simpledesign.ui.tree_panel import TreePanel
@@ -49,6 +55,8 @@ class MainWindow(QMainWindow):
         self._create_actions()
         self._create_menus()
         self._create_toolbar()
+        self._init_shortcuts()
+        self.apply_preferences(Preferences.load())
         self.statusBar().showMessage(self.tr("Bereit"), 3000)
         self.scene.status_message.connect(self._show_status)
 
@@ -181,6 +189,12 @@ class MainWindow(QMainWindow):
         self.action_fit.setShortcut(QKeySequence("F6"))
         self.action_fit.triggered.connect(self.viewport.fit_view)
 
+        self.action_settings = QAction(self.tr("&Einstellungen…"), self)
+        self.action_settings.setShortcut(QKeySequence("Ctrl+,"))
+        self.action_settings.triggered.connect(self.show_settings)
+        self.action_shortcuts = QAction(self.tr("&Tastenkürzel…"), self)
+        self.action_shortcuts.triggered.connect(self.show_shortcuts)
+
         self.action_about = QAction(self.tr("Ü&ber SimpleDesign"), self)
         self.action_about.triggered.connect(self._show_about)
 
@@ -240,6 +254,9 @@ class MainWindow(QMainWindow):
 
         extras_menu = menu_bar.addMenu(self.tr("E&xtras"))
         extras_menu.addAction(self.action_materials)
+        extras_menu.addSeparator()
+        extras_menu.addAction(self.action_shortcuts)
+        extras_menu.addAction(self.action_settings)
 
         help_menu = menu_bar.addMenu(self.tr("&Hilfe"))
         help_menu.addAction(self.action_about)
@@ -312,6 +329,9 @@ class MainWindow(QMainWindow):
 
     def _set_snapping(self, enabled: bool) -> None:
         self.scene.snapping_enabled = enabled
+        if hasattr(self, "preferences") and self.preferences.snapping != enabled:
+            self.preferences.snapping = enabled
+            self.preferences.save()
 
     def _show_status(self, text: str) -> None:
         if text:
@@ -512,6 +532,49 @@ class MainWindow(QMainWindow):
             self.controller.discard_recovery()
 
     # ------------------------------------------------------------------ misc
+    # ------------------------------------------------------------------ preferences
+    def named_actions(self) -> dict[str, QAction]:
+        actions = {
+            name: value
+            for name, value in vars(self).items()
+            if name.startswith("action_") and isinstance(value, QAction)
+        }
+        actions.update({f"view_{name}": action for name, action in self.view_actions.items()})
+        return actions
+
+    def _init_shortcuts(self) -> None:
+        actions = self.named_actions()
+        self.default_shortcuts = {n: a.shortcut().toString() for n, a in actions.items()}
+        apply_saved_shortcuts(actions)
+
+    def apply_preferences(self, prefs: Preferences) -> None:
+        self.preferences = prefs
+        self.action_snap.setChecked(prefs.snapping)
+        self.scene.snap_tolerance_px = prefs.snap_tolerance_px
+        self.controller.set_autosave_minutes(prefs.autosave_minutes)
+        self.controller.new_board_size = (
+            f"{prefs.board_length:g}",
+            f"{prefs.board_width:g}",
+            f"{prefs.board_thickness:g}",
+        )
+
+    def show_settings(self) -> SettingsDialog:
+        dialog = SettingsDialog(self.preferences, self)
+
+        def accepted() -> None:
+            prefs = dialog.preferences()
+            prefs.save()
+            self.apply_preferences(prefs)
+
+        dialog.accepted.connect(accepted)
+        dialog.open()
+        return dialog
+
+    def show_shortcuts(self) -> ShortcutsDialog:
+        dialog = ShortcutsDialog(self.named_actions(), self.default_shortcuts, self)
+        dialog.open()
+        return dialog
+
     def _show_about(self) -> None:
         QMessageBox.about(
             self,

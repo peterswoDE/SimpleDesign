@@ -60,7 +60,8 @@ class Orientation(StrEnum):
 DIMENSIONS = ("length", "width", "thickness")
 POSITION = ("x", "y", "z")
 PATTERN = ("count", "spacing")
-EDITABLE_PROPERTIES = DIMENSIONS + POSITION + PATTERN
+ROTATION = ("angle",)  # degrees about ``rotation_axis`` through the position corner
+EDITABLE_PROPERTIES = DIMENSIONS + POSITION + PATTERN + ROTATION
 # Read-only, computed: end coordinate along each axis (x2 = x + size along X).
 DERIVED_PROPERTIES = ("x2", "y2", "z2")
 PROPERTIES = EDITABLE_PROPERTIES + DERIVED_PROPERTIES
@@ -86,6 +87,7 @@ def default_expressions() -> dict[str, str]:
         "z": "0",
         "count": "1",
         "spacing": "0",
+        "angle": "0",
     }
 
 
@@ -142,6 +144,9 @@ class Board:
     expressions: dict[str, str] = field(default_factory=default_expressions)
     # Pattern ("Anordnung"): `count` copies, `spacing` apart along this axis.
     pattern_axis: Axis = Axis.Z
+    # Free rotation (``angle`` formula) about this world axis, through the
+    # position corner of each copy. Joints are not computed for rotated parts.
+    rotation_axis: Axis = Axis.Z
     visible: bool = True
     transparent: bool = False
     # Grain direction does not matter for this part (e.g. hidden inner parts):

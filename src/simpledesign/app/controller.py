@@ -125,6 +125,8 @@ class Controller(QObject):
         self.autosave_timer.setInterval(AUTOSAVE_INTERVAL_MS)
         self.autosave_timer.timeout.connect(self.autosave)
         self.autosave_timer.start()
+        # Size formulas of new boards (length, width, thickness); see preferences.
+        self.new_board_size = ("600", "300", "18")
 
     # ================================================================== state
     @property
@@ -186,10 +188,19 @@ class Controller(QObject):
     def add_board(self, group_id: str | None = None) -> str:
         board_id = self.execute(
             self.tr("Brett hinzufügen"),
-            lambda d: d.add_board(group_id=group_id, material_id=self.library.default()).id,
+            lambda d: self._new_board(d, group_id),
         )
         self.set_selection([board_id])
         return board_id
+
+    def _new_board(self, d: Document, group_id: str | None) -> str:
+        board = d.add_board(group_id=group_id, material_id=self.library.default())
+        for prop, text in zip(("length", "width", "thickness"), self.new_board_size, strict=True):
+            d.set_expression(board.id, prop, text)
+        return board.id
+
+    def set_autosave_minutes(self, minutes: int) -> None:
+        self.autosave_timer.setInterval(max(1, minutes) * 60_000)
 
     def add_group(self, parent_id: str | None = None, members: Iterable[str] = ()) -> str:
         members = list(members)
@@ -366,6 +377,12 @@ class Controller(QObject):
             d.boards[board_id].pattern_axis = axis
 
         self.execute(self.tr("Anordnung ändern"), change)
+
+    def set_rotation_axis(self, board_id: str, axis: Axis) -> None:
+        def change(d: Document) -> None:
+            d.boards[board_id].rotation_axis = axis
+
+        self.execute(self.tr("Drehachse ändern"), change)
 
     def set_visible(self, ids: Iterable[str], visible: bool) -> None:
         ids = list(ids)

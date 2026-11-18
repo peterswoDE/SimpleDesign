@@ -86,6 +86,7 @@ def property_label(prop: str) -> str:
         "z": "Z",
         "count": _tr("Anzahl"),
         "spacing": _tr("Abstand"),
+        "angle": _tr("Winkel"),
     }
     return labels[prop]
 
@@ -151,6 +152,7 @@ def joint_error_message(code: JointErrorCode) -> str:
         JointErrorCode.TOO_DEEP: _tr("Zu tief für die Materialstärke."),
         JointErrorCode.SCREW_TOO_SHORT: _tr("Die Schraube ist zu kurz."),
         JointErrorCode.INVALID_VALUE: _tr("Ein Wert ist ungültig."),
+        JointErrorCode.ROTATED: _tr("Frei gedrehte Teile werden nicht automatisch verbunden."),
     }
     return messages[code]
 

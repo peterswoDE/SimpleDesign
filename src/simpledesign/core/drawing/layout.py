@@ -102,10 +102,8 @@ def overview_sheet(
     options: DrawingOptions,
     title: str,
 ) -> Sheet:
-    from OCP.gp import gp_Trsf, gp_Vec
-    from OCP.TopLoc import TopLoc_Location
-
     from simpledesign.core.geometry.mesh import make_shape
+    from simpledesign.core.geometry.placement import placed
 
     shapes: list[TopoDS_Shape] = []
     count = 0
@@ -113,9 +111,7 @@ def overview_sheet(
         if not doc.is_visible(board):
             continue
         for part in evaluation.machining.parts[board.id]:
-            move = gp_Trsf()
-            move.SetTranslation(gp_Vec(*part.origin))
-            shapes.append(make_shape(part.size, part.features).Moved(TopLoc_Location(move)))
+            shapes.append(placed(make_shape(part.size, part.features), part.origin, part.rotation))
             count += 1
     sheet = Sheet(options.paper, title)
     sheet.fields = [(labels.parts, str(count))]

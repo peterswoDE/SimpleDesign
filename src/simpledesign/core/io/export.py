@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from simpledesign.core.geometry.mesh import make_shape, part_mesh
+from simpledesign.core.geometry.placement import Rotation, placed, to_world
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation
 from simpledesign.core.model.machining import Feature
@@ -33,6 +34,7 @@ class ExportBody:
     origin: Vec3  # min corner
     size: Vec3  # world-axis-aligned (rough) size
     features: tuple[Feature, ...] = ()  # machining, relative to ``origin``
+    rotation: Rotation = None  # free rotation about ``origin``
 
 
 def export_bodies(doc: Document, evaluation: Evaluation) -> list[ExportBody]:
@@ -43,7 +45,9 @@ def export_bodies(doc: Document, evaluation: Evaluation) -> list[ExportBody]:
         shapes = evaluation.machining.parts[board.id]
         for i, shape in enumerate(shapes):
             name = board.name if len(shapes) == 1 else f"{board.name}_{i + 1}"
-            bodies.append(ExportBody(name, shape.origin, shape.size, shape.features))
+            bodies.append(
+                ExportBody(name, shape.origin, shape.size, shape.features, shape.rotation)
+            )
     return bodies
 
 
@@ -63,23 +67,19 @@ def export(doc: Document, evaluation: Evaluation, path: Path) -> None:
 
 # ====================================================================== STEP
 def write_step(bodies: list[ExportBody], path: Path) -> None:
-    from OCP.gp import gp_Trsf, gp_Vec
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPCAFControl import STEPCAFControl_Writer
     from OCP.STEPControl import STEPControl_AsIs
     from OCP.TCollection import TCollection_ExtendedString
     from OCP.TDataStd import TDataStd_Name
     from OCP.TDocStd import TDocStd_Document
-    from OCP.TopLoc import TopLoc_Location
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
 
     # An XCAF document carries names (and later colours) into the STEP file.
     cad_doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
     shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(cad_doc.Main())
     for body in bodies:
-        move = gp_Trsf()
-        move.SetTranslation(gp_Vec(*body.origin))
-        shape = make_shape(body.size, body.features).Moved(TopLoc_Location(move))
+        shape = placed(make_shape(body.size, body.features), body.origin, body.rotation)
         label = shape_tool.AddShape(shape, False)
         TDataStd_Name.Set_s(label, TCollection_ExtendedString(body.name))
     writer = STEPCAFControl_Writer()
@@ -95,7 +95,8 @@ def _triangles(body: ExportBody) -> np.ndarray:
     """Triangles of a body as an array of shape (n, 3, 3)."""
     mesh = part_mesh(body.size, body.features)
     corners = mesh.faces.reshape(-1, 4)[:, 1:]  # drop the leading "3"
-    triangles: np.ndarray = mesh.points[corners] + np.array(body.origin)
+    points = to_world(np.asarray(mesh.points), body.origin, body.rotation)
+    triangles: np.ndarray = points[corners]
     return triangles
 
 
@@ -129,7 +130,7 @@ def write_obj(bodies: list[ExportBody], path: Path) -> None:
     offset = 1  # OBJ indices start at 1 and count over the whole file
     for body in bodies:
         mesh = part_mesh(body.size, body.features)
-        points = mesh.points + np.array(body.origin)
+        points = to_world(np.asarray(mesh.points), body.origin, body.rotation)
         lines.append(f"o {_obj_name(body.name)}")
         lines += [f"v {x:.4f} {y:.4f} {z:.4f}" for x, y, z in points]
         for a, b, c in mesh.faces.reshape(-1, 4)[:, 1:]:

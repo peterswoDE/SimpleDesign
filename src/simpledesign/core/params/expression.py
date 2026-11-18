@@ -18,6 +18,7 @@ Grammar::
 
 from __future__ import annotations
 
+import functools
 import math
 import re
 from collections.abc import Callable, Iterator
@@ -222,8 +223,12 @@ class _Parser:
         return Ref(tuple(path), first.start, end)
 
 
+@functools.lru_cache(maxsize=4096)
 def parse(text: str) -> Node:
-    """Parse a formula. Raises :class:`FormulaError` with code SYNTAX/EMPTY/…"""
+    """Parse a formula. Raises :class:`FormulaError` with code SYNTAX/EMPTY/…
+
+    Cached: the tree is immutable and formulas repeat across evaluations.
+    """
     return _Parser(text).parse()
 
 

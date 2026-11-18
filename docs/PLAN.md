@@ -266,6 +266,8 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 - Einstellungen, Tastenkürzel, freie Rotationswinkel, Performance.
 - Installer (PyInstaller/Briefcase) – OCC/VTK sind groß, Paketgröße früh testen.
 
+> **Stand Phase 7 (umgesetzt):** Freie Drehung je Brett (Formel „Winkel“ in Grad, Achse X/Y/Z durch die Positionsecke); wirkt in 3D-Ansicht, Export (STEP/STL/OBJ) und Übersichtszeichnung, Zuschnittliste/Einzelteile bleiben in Teilkoordinaten. Gedrehte Teile werden nicht automatisch verbunden (Fehlermeldung an der Verbindung). Extras → Einstellungen (Strg+,): Einrasten + Fangabstand, Sicherungsintervall, Standardmaße neuer Bretter (QSettings). Extras → Tastenkürzel: alle Befehle, frei belegbar, Doppelbelegung wird geblockt, Standard wiederherstellbar. Performance: Formel-Parser gecacht, 3D-Aktoren werden wiederverwendet (156 Teile: Neuaufbau 126 → 19 ms). Auslieferung: `uv run --group build python tools/build_app.py` → `dist/SimpleDesign` (PyInstaller, ein Ordner, ca. 780 MB, davon VTK 290 MB, OCC 170 MB, Qt 100 MB). Englisch entfällt vorerst.
+
 ### Phase 8 – Feinschliff
 Nur Politur, keine neuen Großfunktionen.
 - **Bedienung reparieren**: Maus-/Kamerasteuerung (Drehen, Verschieben, Zoom auf Cursor), Auswahl, Gizmo und Einrasten zuverlässig machen; jede Interaktion mit Test bzw. klarem Verhalten.

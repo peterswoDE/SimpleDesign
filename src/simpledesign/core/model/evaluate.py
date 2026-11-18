@@ -160,7 +160,9 @@ class Evaluator:
             values[key] = fallback(key)
 
         boards = {
-            board.id: _board_state(board.id, board.orientation, board.pattern_axis, values)
+            board.id: _board_state(
+                board.id, board.orientation, board.pattern_axis, values, board.rotation_axis
+            )
             for board in doc.boards.values()
         }
         for board in doc.boards.values():
@@ -263,7 +265,11 @@ def _sum(a: str, b: str) -> Callable[[dict[str, float]], float]:
 
 
 def _board_state(
-    board_id: str, orientation: Orientation, pattern_axis: Axis, values: dict[str, float]
+    board_id: str,
+    orientation: Orientation,
+    pattern_axis: Axis,
+    values: dict[str, float],
+    rotation_axis: Axis = Axis.Z,
 ) -> BoardState:
     v = {prop: values[node_key(board_id, prop)] for prop in EDITABLE_PROPERTIES}
     # A board with a still-invalid size (never valid) must not reach the geometry kernel.
@@ -281,4 +287,6 @@ def _board_state(
         spacing=v["spacing"],
         orientation=orientation,
         pattern_axis=pattern_axis,
+        angle=v["angle"],
+        rotation_axis=rotation_axis,
     )

@@ -13,7 +13,7 @@ from pytestqt.qtbot import QtBot
 from simpledesign.app.controller import Controller
 from simpledesign.app.sketch_session import EditProblem, SketchEditError, SketchSession, Snap
 from simpledesign.core.params.errors import ErrorCode, FormulaError
-from simpledesign.core.sketch.model import ORIGIN, Line, Sketch
+from simpledesign.core.sketch.model import ORIGIN, Circle, Line, Sketch
 from simpledesign.core.sketch.model import ConstraintKind as K
 from simpledesign.core.sketch.solver import References, Status
 from simpledesign.ui.main_window import MainWindow
@@ -94,7 +94,7 @@ def test_undo_redo_and_delete() -> None:
     s.add_circle(Snap((50.0, 25.0)), 10)
     assert len(s.regions[0].holes) == 1
     s.undo()
-    assert not any(e for e in s.sketch.entities if e.startswith("c"))  # circle gone
+    assert not any(isinstance(e, Circle) for e in s.sketch.entities.values())  # circle gone
     assert len(s.sketch.entities) == 4
     s.redo()
     assert len(s.sketch.entities) == 5

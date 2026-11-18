@@ -21,7 +21,14 @@ from PySide6.QtWidgets import (
 )
 
 from simpledesign.app.controller import Controller
-from simpledesign.core.model.part import DIMENSIONS, PATTERN, POSITION, Axis, Orientation
+from simpledesign.core.model.part import (
+    DIMENSIONS,
+    PATTERN,
+    POSITION,
+    ROTATION,
+    Axis,
+    Orientation,
+)
 from simpledesign.core.params.errors import FormulaError
 from simpledesign.ui import sketch_editor
 from simpledesign.ui.expression_field import ExpressionField
@@ -94,6 +101,7 @@ class PropertiesPanel(QScrollArea):
             (self.tr("Maße"), DIMENSIONS),
             (self.tr("Position"), POSITION),
             (self.tr("Anordnung"), PATTERN),
+            (self.tr("Drehung"), ROTATION),
         ):
             box = QGroupBox(title)
             box_form = QFormLayout(box)
@@ -108,6 +116,15 @@ class PropertiesPanel(QScrollArea):
                     self.pattern_axis_combo.addItem(axis_label(axis), axis.value)
                 self.pattern_axis_combo.activated.connect(self._on_pattern_axis)
                 box_form.addRow(self.tr("Richtung"), self.pattern_axis_combo)
+            if props is ROTATION:
+                self.rotation_axis_combo = QComboBox()
+                for axis in Axis:
+                    self.rotation_axis_combo.addItem(axis_label(axis), axis.value)
+                self.rotation_axis_combo.setToolTip(
+                    self.tr("Drehachse durch die Positionsecke; Winkel in Grad")
+                )
+                self.rotation_axis_combo.activated.connect(self._on_rotation_axis)
+                box_form.addRow(self.tr("Achse"), self.rotation_axis_combo)
             layout.addWidget(box)
         layout.addStretch(1)
         self.board_page = page
@@ -181,6 +198,8 @@ class PropertiesPanel(QScrollArea):
                 self.orientation_combo.setCurrentIndex(index)
                 axis_index = self.pattern_axis_combo.findData(board.pattern_axis.value)
                 self.pattern_axis_combo.setCurrentIndex(axis_index)
+                rotation_index = self.rotation_axis_combo.findData(board.rotation_axis.value)
+                self.rotation_axis_combo.setCurrentIndex(rotation_index)
                 sketched = board.profile is not None
                 self.profile_button.setText(
                     self.tr("Kontur bearbeiten…") if sketched else self.tr("Kontur skizzieren…")
@@ -282,6 +301,11 @@ class PropertiesPanel(QScrollArea):
         if (board_id := self._single()) is not None:
             value = str(self.pattern_axis_combo.itemData(index))
             self.controller.set_pattern_axis(board_id, Axis(value))
+
+    def _on_rotation_axis(self, index: int) -> None:
+        if (board_id := self._single()) is not None:
+            value = str(self.rotation_axis_combo.itemData(index))
+            self.controller.set_rotation_axis(board_id, Axis(value))
 
     # ------------------------------------------------------------------ sketches
     def edit_profile(self) -> sketch_editor.SketchEditor | None:

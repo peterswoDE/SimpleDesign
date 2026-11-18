@@ -23,6 +23,12 @@ class BoardState:
     spacing: float
     orientation: Orientation
     pattern_axis: Axis
+    angle: float = 0.0  # degrees about rotation_axis
+    rotation_axis: Axis = Axis.Z
+
+    @property
+    def rotated(self) -> bool:
+        return abs(self.angle % 360.0) > 1e-9
 
     def extent(self, axis: Axis) -> float:
         return float(getattr(self, self.orientation.dimension_along(axis)))

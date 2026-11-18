@@ -36,6 +36,7 @@ class JointErrorCode(StrEnum):
     TOO_DEEP = "too_deep"  # hole/groove deeper than the part
     SCREW_TOO_SHORT = "screw_too_short"
     INVALID_VALUE = "invalid_value"  # a setting is out of range
+    ROTATED = "rotated"  # freely rotated parts get no automatic joints
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +104,8 @@ class PartShape:
     size: Vec3  # rough size, world axes
     features: tuple[Feature, ...] = ()
     cut_operations: int = 0  # grooves, mortises, tenons … (each may have several features)
+    # Free rotation: (world axis 0/1/2, degrees) about ``origin``.
+    rotation: tuple[int, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -538,6 +541,9 @@ def compute_machining(
     for joint in doc.joints.values():
         if joint.main_id not in boards or joint.attached_id not in boards:
             continue
+        if boards[joint.main_id].rotated or boards[joint.attached_id].rotated:
+            result.errors[joint.id] = JointErrorCode.ROTATED
+            continue
         main_thickness = boards[joint.main_id].orientation.thickness_axis.position
         attached_thickness = boards[joint.attached_id].orientation.thickness_axis.position
         try:
@@ -563,12 +569,22 @@ def compute_machining(
         if count:
             key = (joint.kind, joint.param("diameter"), joint.param("length"))
             fittings[key] = fittings.get(key, 0) + count
-    result.parts = {board_id: [i.shape() for i in items] for board_id, items in instances.items()}
+    result.parts = {
+        board_id: [_rotated(i.shape(), boards[board_id]) for i in items]
+        for board_id, items in instances.items()
+    }
     result.hardware = [
         Hardware(kind, diameter, length, quantity)
         for (kind, diameter, length), quantity in sorted(fittings.items())
     ]
     return result
+
+
+def _rotated(shape: PartShape, state: BoardState) -> PartShape:
+    if not state.rotated:
+        return shape
+    rotation = (state.rotation_axis.position, state.angle % 360.0)
+    return PartShape(shape.origin, shape.size, shape.features, shape.cut_operations, rotation)
 
 
 # ====================================================================== cut list helpers

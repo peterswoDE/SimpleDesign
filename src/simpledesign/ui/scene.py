@@ -26,6 +26,7 @@ from vtkmodules.vtkRenderingCore import (
 from simpledesign.app.controller import Controller
 from simpledesign.app.snapping import SnapTarget, Vec3, axis_parameter, best_snap, snap_targets
 from simpledesign.core.geometry.mesh import part_mesh
+from simpledesign.core.geometry.placement import world_bounds
 from simpledesign.core.model.machining import PartShape
 from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import add_offset
@@ -82,9 +83,13 @@ class Scene(QObject):
         self.controller = controller
         self.renderer: vtkRenderer = viewport.renderer
         self.snapping_enabled = True
+        self.snap_tolerance_px = SNAP_TOLERANCE_PX
 
         self._board_actors: dict[str, list[tuple[vtkActor, vtkActor]]] = {}
         self._actor_board: dict[int, str] = {}  # id(actor) -> board id
+        # Actor pairs are reused across rebuilds: adding/removing VTK actors
+        # costs a context switch each, which dominates large documents.
+        self._pool: list[tuple[vtkActor, vtkActor]] = []
         self._meshes: dict[object, tuple[vtkPolyDataMapper, vtkPolyDataMapper]] = {}
         # Software picking: works in every OpenGL context (no hardware selector).
         self._picker = vtkCellPicker()
@@ -120,11 +125,8 @@ class Scene(QObject):
         return self._meshes[key]
 
     def rebuild(self) -> None:
-        for pairs in self._board_actors.values():
-            for face, edge in pairs:
-                self.renderer.RemoveActor(face)
-                self.renderer.RemoveActor(edge)
         self._board_actors = {}
+        used = 0
         self._actor_board = {}
         if len(self._meshes) > 256:
             self._meshes.clear()
@@ -147,30 +149,50 @@ class Scene(QObject):
             for shape in evaluation.machining.parts[board.id]:
                 face_mapper, edge_mapper = self._mappers(shape)
                 origin = shape.origin
-                face = vtkActor()
+                face, edge = self._pooled(used)
+                used += 1
                 face.SetMapper(face_mapper)
-                face.SetPosition(*origin)
+                edge.SetMapper(edge_mapper)
+                for actor in (face, edge):
+                    actor.SetOrientation(0.0, 0.0, 0.0)
+                    actor.SetPosition(*origin)
+                    actor.VisibilityOn()
                 prop = face.GetProperty()
                 prop.SetColor(*_rgb(color))
-                prop.SetAmbient(0.25)
-                prop.SetDiffuse(0.8)
-                if board.transparent:
-                    prop.SetOpacity(TRANSPARENT_OPACITY)
-                edge = vtkActor()
-                edge.SetMapper(edge_mapper)
-                edge.SetPosition(*origin)
-                edge.PickableOff()
+                prop.SetOpacity(TRANSPARENT_OPACITY if board.transparent else 1.0)
+                if shape.rotation is not None:
+                    axis, degrees = shape.rotation
+                    for actor in (face, edge):
+                        actor.RotateWXYZ(degrees, *UNIT[Axis("xyz"[axis])])
                 edge_prop = edge.GetProperty()
                 edge_prop.SetColor(*_rgb(SELECTION_COLOR if is_selected else EDGE_COLOR))
                 edge_prop.SetLineWidth(2.5 if is_selected else 1.0)
-                edge_prop.SetLighting(False)
-                self.renderer.AddActor(face)
-                self.renderer.AddActor(edge)
                 self._actor_board[id(face)] = board.id
                 pairs.append((face, edge))
             self._board_actors[board.id] = pairs
+        for face, edge in self._pool[used:]:
+            face.VisibilityOff()
+            edge.VisibilityOff()
+        if len(self._pool) > 2 * used + 64:  # shrink after deleting many parts
+            for face, edge in self._pool[used:]:
+                self.renderer.RemoveActor(face)
+                self.renderer.RemoveActor(edge)
+            del self._pool[used:]
         self._place_gizmo()
         self.viewport.render()
+
+    def _pooled(self, index: int) -> tuple[vtkActor, vtkActor]:
+        if index == len(self._pool):
+            face, edge = vtkActor(), vtkActor()
+            prop = face.GetProperty()
+            prop.SetAmbient(0.25)
+            prop.SetDiffuse(0.8)
+            edge.PickableOff()
+            edge.GetProperty().SetLighting(False)
+            self.renderer.AddActor(face)
+            self.renderer.AddActor(edge)
+            self._pool.append((face, edge))
+        return self._pool[index]
 
     def board_at(self, x: int, y: int) -> str | None:
         if not self._picker.Pick(x, y, 0, self.renderer):
@@ -224,8 +246,11 @@ class Scene(QObject):
             self._gizmo_origin = None
         else:
             state = self.controller.evaluation.boards[board_id]
-            sx, sy, sz = state.size
-            self._gizmo_origin = (state.x + sx / 2, state.y + sy / 2, state.z + sz / 2)
+            rotation = ("xyz".index(state.rotation_axis.value), state.angle)
+            lo, hi = world_bounds(
+                (state.x, state.y, state.z), state.size, rotation if state.rotated else None
+            )
+            self._gizmo_origin = ((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
         self._show_gizmo_at(self._gizmo_origin)
 
     def _show_gizmo_at(self, origin: Vec3 | None) -> None:
@@ -309,7 +334,7 @@ class Scene(QObject):
         raw_start = drag.start + raw_delta
         drag.snap = None
         if self.snapping_enabled and not self.viewport.iren.interactor.GetShiftKey():
-            tolerance = SNAP_TOLERANCE_PX * self.world_per_pixel(drag.anchor)
+            tolerance = self.snap_tolerance_px * self.world_per_pixel(drag.anchor)
             drag.snap = best_snap(drag.targets, raw_start, tolerance)
         if drag.snap is not None:
             drag.delta = drag.snap.value - drag.start
