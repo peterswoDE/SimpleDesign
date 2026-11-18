@@ -22,6 +22,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from simpledesign.core.io import sdz
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
+from simpledesign.core.model import arrange
 from simpledesign.core.model.document import Document, ref_key
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.joint import JointKind
@@ -449,6 +450,16 @@ class Controller(QObject):
         if not ids or all(abs(v) < 1e-9 for v in delta):
             return
         self.execute(self.tr("Verschieben"), lambda d: d.translate(ids, delta))
+
+    def align(self, ids: Iterable[str], axis: Axis, mode: arrange.AlignMode) -> None:
+        """Align to the first object, one undo step."""
+        ids = list(ids)
+        self.execute(self.tr("Ausrichten"), lambda d: arrange.align(d, ids, axis, mode))
+
+    def distribute(self, ids: Iterable[str], axis: Axis) -> None:
+        """Equal gaps between the objects, one undo step."""
+        ids = list(ids)
+        self.execute(self.tr("Verteilen"), lambda d: arrange.distribute(d, ids, axis))
 
     # ================================================================== templates
     def free_position(self) -> tuple[float, float, float]:

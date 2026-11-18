@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSettings, Qt
@@ -21,6 +22,10 @@ from simpledesign import __version__
 from simpledesign.app.controller import Controller
 from simpledesign.core.io import sdz
 from simpledesign.core.io.export import ExportError, export
+from simpledesign.core.model import arrange
+from simpledesign.core.model.arrange import AlignMode
+from simpledesign.core.model.part import Axis
+from simpledesign.core.params.expression import format_number
 from simpledesign.core.templates.template import Template
 from simpledesign.ui.cutlist_panel import CutlistPanel
 from simpledesign.ui.cutplan_panel import CutplanPanel
@@ -72,7 +77,12 @@ class MainWindow(QMainWindow):
             )
         )
         self.navigation_hint.setStyleSheet("color: palette(placeholder-text)")
+        self.selection_info = QLabel()
+        self.statusBar().addPermanentWidget(self.selection_info)
         self.statusBar().addPermanentWidget(self.navigation_hint)
+        self.controller.selection_changed.connect(self._update_selection_info)
+        self.controller.document_changed.connect(self._update_selection_info)
+        self._update_selection_info()
 
         self.controller.file_state_changed.connect(self._update_title)
         self._update_title()
@@ -183,6 +193,32 @@ class MainWindow(QMainWindow):
         )
         self.action_insert_template.triggered.connect(self.insert_template)
 
+        self.align_actions: list[tuple[QAction, int]] = []  # (action, minimum selection)
+        for axis, mode, label in (
+            (Axis.X, AlignMode.MIN, self.tr("Links bündig")),
+            (Axis.X, AlignMode.CENTER, self.tr("Mittig (links/rechts)")),
+            (Axis.X, AlignMode.MAX, self.tr("Rechts bündig")),
+            (Axis.Y, AlignMode.MIN, self.tr("Vorne bündig")),
+            (Axis.Y, AlignMode.CENTER, self.tr("Mittig (vorne/hinten)")),
+            (Axis.Y, AlignMode.MAX, self.tr("Hinten bündig")),
+            (Axis.Z, AlignMode.MIN, self.tr("Unten bündig")),
+            (Axis.Z, AlignMode.CENTER, self.tr("Mittig (unten/oben)")),
+            (Axis.Z, AlignMode.MAX, self.tr("Oben bündig")),
+        ):
+            action = QAction(label, self)
+            action.setToolTip(self.tr("Am zuerst gewählten Teil ausrichten"))
+            action.triggered.connect(partial(self._align, axis, mode))
+            self.align_actions.append((action, 2))
+        for axis, label in (
+            (Axis.X, self.tr("Gleichmäßig verteilen (links/rechts)")),
+            (Axis.Y, self.tr("Gleichmäßig verteilen (vorne/hinten)")),
+            (Axis.Z, self.tr("Gleichmäßig verteilen (unten/oben)")),
+        ):
+            action = QAction(label, self)
+            action.setToolTip(self.tr("Gleiche Abstände; die äußeren Teile bleiben stehen"))
+            action.triggered.connect(partial(self._distribute, axis))
+            self.align_actions.append((action, 3))
+
         self.action_snap = QAction(self.tr("An Kanten &einrasten"), self)
         self.action_snap.setCheckable(True)
         self.action_snap.setChecked(True)
@@ -249,6 +285,9 @@ class MainWindow(QMainWindow):
             ]
         )
         insert_menu.addAction(tree.action_save_template)
+
+        self.arrange_menu = menu_bar.addMenu(self.tr("An&ordnen"))
+        self._fill_arrange_menu(self.arrange_menu)
 
         joint_menu = menu_bar.addMenu(self.tr("&Verbindung"))
         joint_menu.addActions(list(self.joints_panel.add_actions.values()))
@@ -387,6 +426,8 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             menu.addActions([tree.action_toggle_visible, tree.action_transparent])
             menu.addAction(tree.action_group)
+            if len(self.controller.selection) >= 2:
+                self._fill_arrange_menu(menu.addMenu(self.tr("Anordnen")))
             menu.addSeparator()
         menu.addAction(self.action_add_board)
         menu.addAction(self.action_insert_template)
@@ -403,6 +444,42 @@ class MainWindow(QMainWindow):
         if hasattr(self, "preferences") and self.preferences.snapping != enabled:
             self.preferences.snapping = enabled
             self.preferences.save()
+
+    def _fill_arrange_menu(self, menu: QMenu) -> None:
+        for index, (action, _minimum) in enumerate(self.align_actions):
+            if index and index % 3 == 0:
+                menu.addSeparator()
+            menu.addAction(action)
+
+    def _align(self, axis: Axis, mode: AlignMode) -> None:
+        self.controller.align(self.controller.selection, axis, mode)
+
+    def _distribute(self, axis: Axis) -> None:
+        self.controller.distribute(self.controller.selection, axis)
+
+    def _update_selection_info(self) -> None:
+        """Arrange actions and the size of the selection (measuring)."""
+        selection = self.controller.selection
+        for action, minimum in self.align_actions:
+            action.setEnabled(len(selection) >= minimum)
+        doc, evaluation = self.controller.doc, self.controller.evaluation
+        box = arrange.bounds(doc, selection, evaluation) if selection else None
+        if box is None:
+            self.selection_info.clear()
+            return
+        size = " × ".join(format_number(box[1][i] - box[0][i]) for i in range(3))
+        text = self.tr("Auswahl: {0} mm").format(size)
+        if len(selection) == 2:
+            gaps = arrange.gaps(doc, selection[0], selection[1], evaluation)
+            if gaps is not None:
+                parts = [
+                    f"{name} {format_number(gap)}"
+                    for name, gap in zip("XYZ", gaps, strict=True)
+                    if gap >= 0
+                ]
+                if parts:
+                    text += self.tr(" · Abstand: {0} mm").format(", ".join(parts))
+        self.selection_info.setText(text)
 
     def _show_status(self, text: str) -> None:
         if text:
