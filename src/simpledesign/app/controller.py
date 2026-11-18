@@ -465,9 +465,11 @@ class Controller(QObject):
         template: tpl.Template,
         parameters: dict[str, str] | None = None,
         parent_id: str | None = None,
+        position: tuple[float, float, float] | None = None,
     ) -> str:
-        """Insert a template as a new group (right of the existing parts) and select it."""
-        offset = self.free_position()
+        """Insert a template as a new group at ``position`` (default: right of
+        the existing parts) and select it."""
+        offset = self.free_position() if position is None else position
         group_id = self.execute(
             self.tr("Vorlage einfügen"),
             lambda d: tpl.insert(d, template, parent_id, parameters, offset),

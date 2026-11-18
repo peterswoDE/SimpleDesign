@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QDialog, QMessageBox
+from PySide6.QtWidgets import QMessageBox
 from pytestqt.qtbot import QtBot
 
 from simpledesign.app.controller import Controller
@@ -88,13 +88,13 @@ def test_save_group_as_template(
     ctrl.set_selection([group])
     assert window.tree_panel.selected_group() == group
 
-    def fake_exec(dialog: SaveTemplateDialog) -> int:
-        dialog.name.setText("Mein Regal")
-        dialog.description.setPlainText("selbst gebaut")
-        return QDialog.DialogCode.Accepted.value
-
-    monkeypatch.setattr(SaveTemplateDialog, "exec", fake_exec)
-    window.tree_panel.action_save_template.trigger()
+    dialog = window.tree_panel.save_group_as_template()
+    assert isinstance(dialog, SaveTemplateDialog)
+    dialog.name.setText("Mein Regal")
+    dialog.description.setPlainText("selbst gebaut")
+    library_count = window.library_panel.list.count()
+    dialog.accept()
+    assert window.library_panel.list.count() == library_count + 1
     path = ctrl.templates.path_for("Mein Regal")
     assert path.exists()
 
@@ -119,3 +119,19 @@ def test_template_actions_in_menus(window: MainWindow) -> None:
     window.controller.set_selection([])
     assert window.tree_panel.selected_group() is None
     window.tree_panel.save_group_as_template()  # no group selected: nothing happens
+
+
+def test_insert_dialog_is_not_modal_and_stays_open_on_errors(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *_a: None))
+    ctrl = window.controller
+    dialog = window.insert_template()
+    assert dialog.isVisible()
+    dialog._fields["H"].setText("1800 +")
+    dialog.accept()
+    assert dialog.isVisible()
+    dialog._fields["H"].setText("1500")
+    groups = len(ctrl.doc.groups)
+    dialog.accept()
+    assert len(ctrl.doc.groups) == groups + 1

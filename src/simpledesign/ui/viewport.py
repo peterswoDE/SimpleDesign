@@ -6,8 +6,8 @@ import math
 from typing import Any, Protocol
 
 import pyvista as pv
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QKeyEvent
 from PySide6.QtWidgets import QWidget
 from pyvistaqt import QtInteractor
 from vtkmodules.vtkCommonCore import vtkCommand
@@ -15,6 +15,7 @@ from vtkmodules.vtkInteractionStyle import vtkInteractorStyleUser
 from vtkmodules.vtkRenderingCore import vtkPropPicker, vtkRenderer
 
 from simpledesign.ui.camera import STANDARD_VIEWS, Vec3, scale_about, turntable
+from simpledesign.ui.library_panel import MIME_TYPE
 
 WHEEL_ZOOM_FACTOR = 1.15
 
@@ -296,8 +297,12 @@ class FusionInteractorStyle(vtkInteractorStyleUser):
 class Viewport(QtInteractor):
     """The central 3D view."""
 
+    # A furniture template was dropped: (template key, x, y in widget pixels).
+    template_dropped = Signal(str, int, int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, auto_update=False, multi_samples=8)
+        self.setAcceptDrops(True)
         # Not named `style`: that would shadow QWidget.style().
         self.interaction_style = FusionInteractorStyle()
         self.iren.interactor.SetInteractorStyle(self.interaction_style)
@@ -318,6 +323,35 @@ class Viewport(QtInteractor):
             event.accept()
             return
         super().keyPressEvent(event)  # type: ignore[no-untyped-call]
+
+    # ------------------------------------------------------------------ drag & drop
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasFormat(MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if event.mimeData().hasFormat(MIME_TYPE):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        data = event.mimeData()
+        if not data.hasFormat(MIME_TYPE):
+            event.ignore()
+            return
+        key = bytes(data.data(MIME_TYPE).data()).decode("utf-8")
+        position = event.position()
+        event.acceptProposedAction()
+        self.template_dropped.emit(key, round(position.x()), round(position.y()))
+
+    def to_display(self, x: float, y: float) -> tuple[int, int]:
+        """Widget (logical) pixels → VTK display pixels (device pixels, y up)."""
+        ratio = self.devicePixelRatioF()
+        height = self.renderer.GetSize()[1]
+        return round(x * ratio), round(height - y * ratio - 1)
 
     # ------------------------------------------------------------------ scene helpers
     def _add_grid(self) -> None:

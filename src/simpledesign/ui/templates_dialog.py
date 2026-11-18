@@ -32,9 +32,15 @@ INDEX_ROLE = Qt.ItemDataRole.UserRole
 class InsertTemplateDialog(QDialog):
     """Pick a template and set its parameters before inserting it."""
 
-    def __init__(self, library: TemplateLibrary, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        library: TemplateLibrary,
+        parent: QWidget | None = None,
+        insert: Callable[[Template, dict[str, str]], object] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(self.tr("Vorlage einfügen"))
+        self._insert = insert
         self.resize(640, 420)
         self.library = library
         self._templates: list[Template] = []
@@ -104,6 +110,12 @@ class InsertTemplateDialog(QDialog):
             field.setObjectName(f"param_{param.name}")
             self._fields[param.name] = field
             self.form.addRow(param.name, field)
+
+    def accept(self) -> None:
+        """With an ``insert`` callback the dialog only closes once inserting worked."""
+        if self._insert is not None and not insert_template(self, self._insert):
+            return
+        super().accept()
 
     def template(self) -> Template | None:
         row = self.list.currentRow()

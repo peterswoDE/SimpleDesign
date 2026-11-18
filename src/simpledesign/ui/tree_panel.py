@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from functools import partial
+from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDialog,
     QMenu,
     QMessageBox,
     QTreeWidget,
@@ -18,6 +20,9 @@ from PySide6.QtWidgets import (
 
 from simpledesign.app.controller import Controller
 from simpledesign.core.params.errors import FormulaError
+
+if TYPE_CHECKING:
+    from simpledesign.ui.templates_dialog import SaveTemplateDialog
 from simpledesign.ui.texts import error_message
 
 ID_ROLE = Qt.ItemDataRole.UserRole
@@ -25,6 +30,9 @@ HIDDEN_COLOR = QColor("#9aa5b1")
 
 
 class TreePanel(QWidget):
+    # A group was saved as template (the furniture library reloads).
+    template_saved = Signal()
+
     def __init__(self, controller: Controller, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.controller = controller
@@ -79,15 +87,20 @@ class TreePanel(QWidget):
         ids = self.selected_ids()
         return ids[0] if len(ids) == 1 and ids[0] in self.controller.doc.groups else None
 
-    def save_group_as_template(self) -> None:
+    def save_group_as_template(self) -> QDialog | None:
+        """Ask for name and description (non-blocking), then save."""
         group = self.selected_group()
         if group is None:
-            return
+            return None
         from simpledesign.ui.templates_dialog import SaveTemplateDialog
 
         dialog = SaveTemplateDialog(self.controller.doc.groups[group].name, self)
-        if dialog.exec() != SaveTemplateDialog.DialogCode.Accepted:
-            return
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.accepted.connect(partial(self._save_template, group, dialog))
+        dialog.open()
+        return dialog
+
+    def _save_template(self, group: str, dialog: SaveTemplateDialog) -> None:
         name = dialog.name.text().strip()
         if self.controller.templates.path_for(name).exists():
             answer = QMessageBox.question(
@@ -103,6 +116,8 @@ class TreePanel(QWidget):
             )
         except OSError as error:
             QMessageBox.warning(self, self.tr("Vorlage speichern"), str(error))
+            return
+        self.template_saved.emit()
 
     # ------------------------------------------------------------------ building
     def rebuild(self) -> None:
@@ -274,4 +289,5 @@ class TreePanel(QWidget):
         menu.addAction(self.action_group)
         if self.selected_group() is not None:
             menu.addAction(self.action_save_template)
-        menu.exec(self.tree.viewport().mapToGlobal(pos))
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        menu.popup(self.tree.viewport().mapToGlobal(pos))

@@ -21,10 +21,12 @@ from simpledesign import __version__
 from simpledesign.app.controller import Controller
 from simpledesign.core.io import sdz
 from simpledesign.core.io.export import ExportError, export
+from simpledesign.core.templates.template import Template
 from simpledesign.ui.cutlist_panel import CutlistPanel
 from simpledesign.ui.cutplan_panel import CutplanPanel
 from simpledesign.ui.drawing_dialog import DrawingDialog
 from simpledesign.ui.joints_panel import JointsPanel
+from simpledesign.ui.library_panel import LibraryPanel
 from simpledesign.ui.materials_dialog import MaterialsDialog
 from simpledesign.ui.parameters_panel import ParametersPanel
 from simpledesign.ui.properties_panel import PropertiesPanel
@@ -36,7 +38,7 @@ from simpledesign.ui.settings_dialog import (
     apply_saved_shortcuts,
 )
 from simpledesign.ui.sketch_editor import NewPartEditor, new_sketch_part
-from simpledesign.ui.templates_dialog import InsertTemplateDialog, insert_template
+from simpledesign.ui.templates_dialog import InsertTemplateDialog
 from simpledesign.ui.tree_panel import TreePanel
 from simpledesign.ui.viewport import Viewport
 
@@ -62,6 +64,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(self.tr("Bereit"), 3000)
         self.scene.status_message.connect(self._show_status)
         self.scene.context_menu_requested.connect(self.show_view_menu)
+        self.viewport.template_dropped.connect(self.drop_template)
         self.navigation_hint = QLabel(
             self.tr(
                 "Links ziehen: drehen · Rechts/Mitte ziehen: schieben · Rad: zoomen · "
@@ -103,6 +106,10 @@ class MainWindow(QMainWindow):
             "joints", self.tr("Verbindungen"), self.joints_panel, right
         )
         self.joints_panel.joint_created.connect(lambda _id: self.joints_dock.show())
+        self.library_panel = LibraryPanel(self.controller.templates)
+        self.library_dock = self._add_dock("library", self.tr("Möbel"), self.library_panel, left)
+        self.library_panel.insert_requested.connect(self.insert_library_template)
+        self.tree_panel.template_saved.connect(self.library_panel.reload)
         self.tabifyDockWidget(self.parameters_dock, self.cutlist_dock)
         self.tabifyDockWidget(self.cutlist_dock, self.cutplan_dock)
         self.parameters_dock.raise_()
@@ -254,6 +261,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_snap)
         view_menu.addSeparator()
         for dock in (
+            self.library_dock,
             self.parts_dock,
             self.properties_dock,
             self.joints_dock,
@@ -320,9 +328,9 @@ class MainWindow(QMainWindow):
     def add_sketch_part(self) -> NewPartEditor:
         return new_sketch_part(self, self.controller)
 
-    def insert_template(self) -> None:
+    def insert_template(self) -> InsertTemplateDialog:
         library = self.controller.templates
-        dialog = InsertTemplateDialog(library, self)
+        dialog = InsertTemplateDialog(library, self, self._insert_from_dialog)
         if library.errors:
             QMessageBox.warning(
                 self,
@@ -331,12 +339,44 @@ class MainWindow(QMainWindow):
                     "\n".join(library.errors)
                 ),
             )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.open()
+        return dialog
+
+    def _insert_from_dialog(self, template: Template, parameters: dict[str, str]) -> None:
         first = not self.controller.doc.boards
-        while dialog.exec() == InsertTemplateDialog.DialogCode.Accepted:
-            if insert_template(dialog, self.controller.insert_template):
-                if first:
-                    self.viewport.fit_view()
-                return
+        self.controller.insert_template(template, parameters)
+        if first:
+            self.viewport.fit_view()
+
+    def insert_library_template(self, key: str) -> str | None:
+        """Double-click in the furniture library: insert next to the existing parts."""
+        template = self.library_panel.template(key)
+        if template is None:
+            return None
+        first = not self.controller.doc.boards
+        group = self.controller.insert_template(template)
+        if first:
+            self.viewport.fit_view()
+        return group
+
+    def drop_template(self, key: str, x: int, y: int) -> str | None:
+        """A template was dragged from the library into the 3D view: place it
+        on the floor under the cursor (on a 10 mm raster)."""
+        template = self.library_panel.template(key)
+        if template is None:
+            return None
+        point = self.scene.plane_point((0.0, 0.0, 0.0), 2, *self.viewport.to_display(x, y))
+        position = None
+        if point is not None:
+            position = (round(point[0] / 10) * 10.0, round(point[1] / 10) * 10.0, 0.0)
+        first = not self.controller.doc.boards
+        group = self.controller.insert_template(template, position=position)
+        if first:
+            self.viewport.fit_view()
+        self.activateWindow()
+        self.viewport.setFocus()
+        return group
 
     def show_view_menu(self, x: int, y: int) -> QMenu:
         """Context menu of the 3D view (right click)."""
