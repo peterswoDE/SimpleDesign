@@ -1,17 +1,20 @@
-"""3D viewport: Fusion-like mouse navigation, floor grid and axes."""
+"""3D viewport: mouse navigation (turntable orbit, pan, zoom), floor grid and axes."""
 
 from __future__ import annotations
 
+import math
 from typing import Any, Protocol
 
 import pyvista as pv
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QWidget
 from pyvistaqt import QtInteractor
 from vtkmodules.vtkCommonCore import vtkCommand
-from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
-from vtkmodules.vtkRenderingCore import vtkPropPicker
+from vtkmodules.vtkInteractionStyle import vtkInteractorStyleUser
+from vtkmodules.vtkRenderingCore import vtkPropPicker, vtkRenderer
 
-from simpledesign.ui.camera import STANDARD_VIEWS, Vec3, scale_about
+from simpledesign.ui.camera import STANDARD_VIEWS, Vec3, scale_about, turntable
 
 WHEEL_ZOOM_FACTOR = 1.15
 
@@ -22,31 +25,65 @@ AXIS_LENGTH_MM = 300.0
 # Camera framing when the scene is still empty: a typical piece of furniture.
 EMPTY_SCENE_BOUNDS = (0.0, 1000.0, 0.0, 500.0, 0.0, 1000.0)
 
-# vtkInteractorStyle states
-_STATE_ROTATE = 1
-_STATE_PAN = 2
+ORBIT_DEGREES_PER_PX = 0.4
+DRAG_TOLERANCE_PX = 3
+
+
+def world_per_pixel(renderer: vtkRenderer, point: Vec3) -> float:
+    """Size of one screen pixel in world units at ``point``."""
+    camera = renderer.GetActiveCamera()
+    height = max(renderer.GetSize()[1], 1)
+    if camera.GetParallelProjection():
+        return float(2.0 * camera.GetParallelScale() / height)
+    position = camera.GetPosition()
+    direction = camera.GetDirectionOfProjection()
+    depth = sum((point[i] - position[i]) * direction[i] for i in range(3))
+    return 2.0 * max(depth, 1e-6) * math.tan(math.radians(camera.GetViewAngle() / 2)) / height
 
 
 class PointerHandler(Protocol):
-    """Receives left-button events (selection, gizmo drag) from the style."""
+    """Receives the mouse events that are not camera navigation."""
 
-    def press(self, x: int, y: int, ctrl: bool) -> None: ...
+    def press(self, x: int, y: int, ctrl: bool) -> bool:
+        """Left button down. True if the handler takes the drag (gizmo, part);
+        otherwise a drag orbits the camera."""
+        ...
 
     def move(self, x: int, y: int) -> bool:
-        """Return True if the move was consumed (e.g. a drag is running)."""
+        """Mouse moved with the left button down. True if consumed."""
         ...
 
     def release(self, x: int, y: int, ctrl: bool) -> None: ...
 
+    def hover(self, x: int, y: int) -> None:
+        """Mouse moved without a button."""
+        ...
 
-class FusionInteractorStyle(vtkInteractorStyleTrackballCamera):
-    """Mouse mapping like Fusion 360.
+    def context_menu(self, x: int, y: int) -> None:
+        """Right click without moving."""
+        ...
 
-    * middle button drag         → pan
-    * Shift + middle button drag → orbit
+    def cancel(self) -> None:
+        """Escape: abort a running drag."""
+        ...
+
+
+_RELEASE_BUTTON = {
+    "LeftButtonReleaseEvent": "left",
+    "MiddleButtonReleaseEvent": "middle",
+    "RightButtonReleaseEvent": "right",
+}
+
+
+class FusionInteractorStyle(vtkInteractorStyleUser):
+    """Mouse mapping:
+
+    * left drag on empty space   → orbit (turntable, Z stays up) about the point
+      under the cursor
+    * left click / drag on a part or gizmo arrow → ``pointer_handler`` (select, move)
+    * middle drag                → pan, Shift + middle drag → orbit
+    * right drag                 → pan, right click → context menu
     * mouse wheel                → zoom towards the point under the cursor
-    * left button                → forwarded to ``pointer_handler`` (select, drag)
-    * right button               → reserved for context menus
 
     Observers registered on the style *replace* VTK's default handlers.
     """
@@ -55,63 +92,170 @@ class FusionInteractorStyle(vtkInteractorStyleTrackballCamera):
         super().__init__()
         self._picker = vtkPropPicker()
         self.pointer_handler: PointerHandler | None = None
-        self.AddObserver(vtkCommand.LeftButtonPressEvent, self._on_left_press)
-        self.AddObserver(vtkCommand.LeftButtonReleaseEvent, self._on_left_release)
-        self.AddObserver(vtkCommand.MouseMoveEvent, self._on_mouse_move)
-        self.AddObserver(vtkCommand.MiddleButtonPressEvent, self._on_middle_press)
-        self.AddObserver(vtkCommand.MiddleButtonReleaseEvent, self._on_middle_release)
-        self.AddObserver(vtkCommand.MouseWheelForwardEvent, self._on_wheel_forward)
-        self.AddObserver(vtkCommand.MouseWheelBackwardEvent, self._on_wheel_backward)
-        for event in (
-            vtkCommand.RightButtonPressEvent,
-            vtkCommand.RightButtonReleaseEvent,
+        self._button: str | None = None  # "left" / "middle" / "right"
+        self._mode: str | None = None  # "handler" / "orbit" / "pan" / None (undecided)
+        self._press: tuple[int, int] = (0, 0)
+        self._last: tuple[int, int] = (0, 0)
+        self._pivot: Vec3 = (0.0, 0.0, 0.0)
+        for event, handler in (
+            (vtkCommand.LeftButtonPressEvent, self._on_left_press),
+            (vtkCommand.LeftButtonReleaseEvent, self._on_release),
+            (vtkCommand.MiddleButtonPressEvent, self._on_middle_press),
+            (vtkCommand.MiddleButtonReleaseEvent, self._on_release),
+            (vtkCommand.RightButtonPressEvent, self._on_right_press),
+            (vtkCommand.RightButtonReleaseEvent, self._on_release),
+            (vtkCommand.MouseMoveEvent, self._on_mouse_move),
+            (vtkCommand.MouseWheelForwardEvent, self._on_wheel_forward),
+            (vtkCommand.MouseWheelBackwardEvent, self._on_wheel_backward),
             # VTK's built-in key bindings ("q"/"e" quit, "w" wireframe, …) must not fire.
-            vtkCommand.CharEvent,
+            (vtkCommand.CharEvent, self._ignore),
+            (vtkCommand.KeyPressEvent, self._ignore),
         ):
-            self.AddObserver(event, self._ignore)
+            self.AddObserver(event, handler)
 
-    # ------------------------------------------------------------------ buttons
+    # ------------------------------------------------------------------ helpers
     def _ignore(self, _obj: Any, _event: str) -> None:
         return
 
-    def _event(self) -> tuple[int, int, bool]:
-        interactor = self.GetInteractor()
-        x, y = interactor.GetEventPosition()
-        return x, y, bool(interactor.GetControlKey())
-
-    def _on_left_press(self, _obj: Any, _event: str) -> None:
-        if self.pointer_handler is not None:
-            self.pointer_handler.press(*self._event())
-
-    def _on_left_release(self, _obj: Any, _event: str) -> None:
-        if self.pointer_handler is not None:
-            self.pointer_handler.release(*self._event())
-
-    def _on_mouse_move(self, _obj: Any, _event: str) -> None:
-        x, y, _ctrl = self._event()
-        if self.pointer_handler is not None and self.pointer_handler.move(x, y):
-            return
-        self.OnMouseMove()  # default: continue pan / orbit
-
-    def _poke(self) -> bool:
+    def _position(self) -> tuple[int, int]:
         x, y = self.GetInteractor().GetEventPosition()
-        self.FindPokedRenderer(x, y)
-        return self.GetCurrentRenderer() is not None
+        return int(x), int(y)
+
+    def _renderer(self) -> vtkRenderer | None:
+        renderer: vtkRenderer | None = self.GetDefaultRenderer()
+        if renderer is None:
+            x, y = self._position()
+            self.FindPokedRenderer(x, y)
+            renderer = self.GetCurrentRenderer()
+        return renderer
+
+    def _start(self, button: str, mode: str | None) -> None:
+        self._button = button
+        self._mode = mode
+        self._press = self._last = self._position()
+        if mode == "orbit":
+            self._pivot = self._pick_pivot(*self._press)
+
+    def _pick_pivot(self, x: int, y: int) -> Vec3:
+        renderer = self._renderer()
+        if renderer is None:
+            return (0.0, 0.0, 0.0)
+        if self._picker.Pick(x, y, 0, renderer):
+            px, py, pz = self._picker.GetPickPosition()
+            return (px, py, pz)
+        fx, fy, fz = renderer.GetActiveCamera().GetFocalPoint()
+        return (fx, fy, fz)
+
+    # ------------------------------------------------------------------ buttons
+    def _on_left_press(self, _obj: Any, _event: str) -> None:
+        if self._button is not None:
+            return
+        x, y = self._position()
+        ctrl = bool(self.GetInteractor().GetControlKey())
+        owned = self.pointer_handler is not None and self.pointer_handler.press(x, y, ctrl)
+        self._start("left", "handler" if owned else None)
 
     def _on_middle_press(self, _obj: Any, _event: str) -> None:
-        if not self._poke():
-            return
-        if self.GetInteractor().GetShiftKey():
-            self.StartRotate()
-        else:
-            self.StartPan()
+        if self._button is None:
+            self._start("middle", "orbit" if self.GetInteractor().GetShiftKey() else "pan")
 
-    def _on_middle_release(self, _obj: Any, _event: str) -> None:
-        state = self.GetState()
-        if state == _STATE_ROTATE:
-            self.EndRotate()
-        elif state == _STATE_PAN:
-            self.EndPan()
+    def _on_right_press(self, _obj: Any, _event: str) -> None:
+        if self._button is None:
+            self._start("right", None)
+
+    def _on_release(self, _obj: Any, event: str) -> None:
+        button = _RELEASE_BUTTON.get(event)
+        if button is None or button != self._button:
+            return
+        x, y = self._position()
+        mode = self._mode
+        self._button = self._mode = None
+        handler = self.pointer_handler
+        if handler is None:
+            return
+        if button == "left" and mode in ("handler", None):
+            handler.release(x, y, bool(self.GetInteractor().GetControlKey()))
+        elif button == "right" and mode is None:
+            handler.context_menu(x, y)
+
+    def _on_mouse_move(self, _obj: Any, _event: str) -> None:
+        x, y = self._position()
+        handler = self.pointer_handler
+        if self._button is None:
+            if handler is not None:
+                handler.hover(x, y)
+            return
+        if self._mode == "handler":
+            if handler is not None:
+                handler.move(x, y)
+            return
+        if self._mode is None:
+            if max(abs(x - self._press[0]), abs(y - self._press[1])) <= DRAG_TOLERANCE_PX:
+                return
+            self._mode = "orbit" if self._button == "left" else "pan"
+            if self._mode == "orbit":
+                self._pivot = self._pick_pivot(*self._press)
+        dx, dy = x - self._last[0], y - self._last[1]
+        self._last = (x, y)
+        if self._mode == "orbit":
+            self.orbit(dx, dy)
+        elif self._mode == "pan":
+            self.pan(dx, dy)
+
+    def cancel(self) -> None:
+        """Escape: end any navigation and abort the handler's drag."""
+        self._button = self._mode = None
+        if self.pointer_handler is not None:
+            self.pointer_handler.cancel()
+
+    # ------------------------------------------------------------------ camera
+    def set_pivot(self, pivot: Vec3) -> None:
+        self._pivot = pivot
+
+    def orbit(self, dx: float, dy: float) -> None:
+        """Turntable orbit about the current pivot by a mouse movement in pixels."""
+        renderer = self._renderer()
+        if renderer is None:
+            return
+        camera = renderer.GetActiveCamera()
+        position, focal, up = turntable(
+            camera.GetPosition(),
+            camera.GetFocalPoint(),
+            camera.GetViewUp(),
+            self._pivot,
+            -dx * ORBIT_DEGREES_PER_PX,
+            -dy * ORBIT_DEGREES_PER_PX,
+        )
+        camera.SetPosition(*position)
+        camera.SetFocalPoint(*focal)
+        camera.SetViewUp(*up)
+        camera.OrthogonalizeViewUp()
+        self._update(renderer)
+
+    def pan(self, dx: float, dy: float) -> None:
+        """Move the view so the scene follows the mouse."""
+        renderer = self._renderer()
+        if renderer is None:
+            return
+        camera = renderer.GetActiveCamera()
+        focal = camera.GetFocalPoint()
+        scale = world_per_pixel(renderer, focal)
+        up = camera.GetViewUp()
+        direction = camera.GetDirectionOfProjection()
+        right = (
+            direction[1] * up[2] - direction[2] * up[1],
+            direction[2] * up[0] - direction[0] * up[2],
+            direction[0] * up[1] - direction[1] * up[0],
+        )
+        shift = [-(dx * right[i] + dy * up[i]) * scale for i in range(3)]
+        position = camera.GetPosition()
+        camera.SetFocalPoint(focal[0] + shift[0], focal[1] + shift[1], focal[2] + shift[2])
+        camera.SetPosition(position[0] + shift[0], position[1] + shift[1], position[2] + shift[2])
+        self._update(renderer)
+
+    def _update(self, renderer: vtkRenderer) -> None:
+        renderer.ResetCameraClippingRange()
+        self.GetInteractor().Render()
 
     # ------------------------------------------------------------------ zoom
     def _on_wheel_forward(self, _obj: Any, _event: str) -> None:
@@ -121,10 +265,10 @@ class FusionInteractorStyle(vtkInteractorStyleTrackballCamera):
         self.zoom_to_cursor(1.0 / WHEEL_ZOOM_FACTOR)
 
     def zoom_to_cursor(self, factor: float) -> None:
-        if not self._poke():
+        renderer = self._renderer()
+        if renderer is None:
             return
         interactor = self.GetInteractor()
-        renderer = self.GetCurrentRenderer()
         camera = renderer.GetActiveCamera()
         x, y = interactor.GetEventPosition()
 
@@ -146,8 +290,7 @@ class FusionInteractorStyle(vtkInteractorStyleTrackballCamera):
         camera.SetFocalPoint(*scale_about(camera.GetFocalPoint(), target, factor))
         if camera.GetParallelProjection():
             camera.SetParallelScale(camera.GetParallelScale() / factor)
-        renderer.ResetCameraClippingRange()
-        interactor.Render()
+        self._update(renderer)
 
 
 class Viewport(QtInteractor):
@@ -168,6 +311,13 @@ class Viewport(QtInteractor):
         self._add_origin_axes()
         self.add_axes(interactive=False, line_width=2, labels_off=False)  # type: ignore[call-arg]
         self.show_view("iso")
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.interaction_style.cancel()
+            event.accept()
+            return
+        super().keyPressEvent(event)  # type: ignore[no-untyped-call]
 
     # ------------------------------------------------------------------ scene helpers
     def _add_grid(self) -> None:

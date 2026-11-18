@@ -420,19 +420,35 @@ class Controller(QObject):
         self.set_selection(i for i in self.selection if i not in ids)
 
     def move_board(self, board_id: str, axis: Axis, formula: str, value: float) -> None:
-        """Set a position formula from the gizmo.
+        """Set one position formula (gizmo); see ``place_board``."""
+        self.place_board(board_id, {axis: (formula, value)})
+
+    def place_board(self, board_id: str, moves: dict[Axis, tuple[str, float]]) -> None:
+        """Set position formulas ``{axis: (formula, value)}`` in one undo step.
 
         A snap formula can create a cycle (the target already depends on this
         board) - then the plain ``value`` is used instead.
         """
+        if not moves:
+            return
 
         def change(d: Document) -> None:
-            d.set_expression(board_id, axis.value, formula)
-            error = Evaluator().evaluate(d).error(board_id, axis.value)
-            if error is not None and error.code == ErrorCode.CYCLE:
-                d.set_expression(board_id, axis.value, format_number(value))
+            for axis, (formula, _value) in moves.items():
+                d.set_expression(board_id, axis.value, formula)
+            evaluation = Evaluator().evaluate(d)
+            for axis, (_formula, value) in moves.items():
+                error = evaluation.error(board_id, axis.value)
+                if error is not None and error.code == ErrorCode.CYCLE:
+                    d.set_expression(board_id, axis.value, format_number(value))
 
         self.execute(self.tr("Verschieben"), change)
+
+    def translate(self, ids: Iterable[str], delta: tuple[float, float, float]) -> None:
+        """Move boards and groups (with their contents) by ``delta`` in one undo step."""
+        ids = list(ids)
+        if not ids or all(abs(v) < 1e-9 for v in delta):
+            return
+        self.execute(self.tr("Verschieben"), lambda d: d.translate(ids, delta))
 
     # ================================================================== templates
     def free_position(self) -> tuple[float, float, float]:

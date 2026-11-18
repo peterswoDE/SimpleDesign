@@ -1,16 +1,20 @@
-"""Boards in the 3D view, click selection and the move gizmo.
+"""Boards in the 3D view, selection, moving parts and the move gizmo.
 
 * Every pattern copy of a board is one ``vtkActor`` sharing a box mesh that is
   cached by size; the actor is placed with ``SetPosition`` (no re-meshing).
 * The gizmo (three arrows) lives in an overlay renderer (layer 1) that shares
-  the camera, so it is always drawn on top. Its size is kept constant on screen.
-* Dragging an arrow moves the board along that axis. Near a face of another
-  board it snaps and writes a formula (``Seite.x2``) instead of a number.
+  the camera, so it is always drawn on top. Its size is kept constant on screen
+  and its arrows are picked in screen space (generous, independent of zoom).
+* Dragging an arrow moves the selection along that axis. A single board snaps
+  to faces of other boards and gets a formula (``Seite.x2``) instead of a number.
+* Dragging a part itself moves it in the floor plane (or, looking from the
+  side, in the vertical plane facing the camera).
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 
 import numpy as np
 import pyvista as pv
@@ -31,19 +35,24 @@ from simpledesign.core.model.machining import PartShape
 from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import add_offset
 from simpledesign.ui.texts import number
-from simpledesign.ui.viewport import Viewport
+from simpledesign.ui.viewport import Viewport, world_per_pixel
 
 CLICK_TOLERANCE_PX = 3
 SNAP_TOLERANCE_PX = 8
 GIZMO_SIZE_PX = 90
+GIZMO_PICK_PX = 10  # distance from an arrow (on screen) that still grabs it
 SELECTION_COLOR = "#2f7de1"
 EDGE_COLOR = "#4b4136"
 TRANSPARENT_OPACITY = 0.3
 AXIS_COLORS = {Axis.X: "#d64545", Axis.Y: "#3fa34d", Axis.Z: "#3b6fd6"}
 HIGHLIGHT_COLOR = "#ffcc33"
 UNIT = {Axis.X: (1.0, 0.0, 0.0), Axis.Y: (0.0, 1.0, 0.0), Axis.Z: (0.0, 0.0, 1.0)}
+AXES = (Axis.X, Axis.Y, Axis.Z)
+# Looking down at least this steeply (|view direction · Z|) drags parts on the floor plane.
+FLOOR_DRAG_MIN_Z = 0.35
 
 type Size = tuple[float, float, float]
+type Point2 = tuple[float, float]
 
 
 def _rgb(color: str) -> tuple[float, float, float]:
@@ -62,20 +71,36 @@ def _edges(size: Size) -> pv.PolyData:
     return pv.PolyData(corners, lines=lines)
 
 
+def segment_distance(p: Point2, a: Point2, b: Point2) -> float:
+    """Distance of point ``p`` to the segment ``a``-``b`` (2D)."""
+    ab = (b[0] - a[0], b[1] - a[1])
+    length2 = ab[0] ** 2 + ab[1] ** 2
+    t = 0.0 if length2 < 1e-12 else ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / length2
+    t = max(0.0, min(1.0, t))
+    return math.hypot(p[0] - a[0] - t * ab[0], p[1] - a[1] - t * ab[1])
+
+
+@dataclass(eq=False)
 class _Drag:
-    def __init__(self, board_id: str, axis: Axis, anchor: Vec3, start: float, t0: float) -> None:
-        self.board_id = board_id
-        self.axis = axis
-        self.anchor = anchor  # gizmo origin at drag start
-        self.start = start  # board start coordinate along the axis at drag start
-        self.t0 = t0  # axis parameter under the cursor at drag start
-        self.delta = 0.0
-        self.snap: SnapTarget | None = None
-        self.targets: list[SnapTarget] = []
+    """A running move of ``ids`` (boards and groups) by ``delta``."""
+
+    ids: list[str]
+    boards: set[str]  # all boards that move (incl. group contents)
+    single: str | None  # the board id when exactly one board moves (enables snapping)
+    anchor: Vec3  # gizmo origin / grab point at drag start
+    delta: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    snaps: dict[Axis, SnapTarget] = field(default_factory=dict)
+    targets: dict[Axis, list[SnapTarget]] = field(default_factory=dict)
+    # axis drag (gizmo arrow); None = plane drag of a part
+    axis: Axis | None = None
+    t0: float = 0.0
+    normal: int = 2  # plane drag: index of the plane normal's world axis
 
 
 class Scene(QObject):
     status_message = Signal(str)
+    # Right click at a viewport position (logical pixels from the top-left).
+    context_menu_requested = Signal(int, int)
 
     def __init__(self, viewport: Viewport, controller: Controller) -> None:
         super().__init__(viewport)
@@ -87,15 +112,19 @@ class Scene(QObject):
 
         self._board_actors: dict[str, list[tuple[vtkActor, vtkActor]]] = {}
         self._actor_board: dict[int, str] = {}  # id(actor) -> board id
+        self._selected_boards: set[str] = set()
         # Actor pairs are reused across rebuilds: adding/removing VTK actors
         # costs a context switch each, which dominates large documents.
         self._pool: list[tuple[vtkActor, vtkActor]] = []
         self._meshes: dict[object, tuple[vtkPolyDataMapper, vtkPolyDataMapper]] = {}
         # Software picking: works in every OpenGL context (no hardware selector).
         self._picker = vtkCellPicker()
-        self._picker.SetTolerance(0.002)
+        self._picker.SetTolerance(0.0005)
         self._press: tuple[int, int] | None = None
+        self._press_board: str | None = None
+        self._press_point: Vec3 | None = None
         self._drag: _Drag | None = None
+        self._hover_axis: Axis | None = None
 
         self._create_overlay()
         viewport.interaction_style.pointer_handler = self
@@ -124,6 +153,16 @@ class Scene(QObject):
             self._meshes[key] = (face_mapper, edge_mapper)
         return self._meshes[key]
 
+    def selected_boards(self) -> set[str]:
+        """Selected boards, including everything inside selected groups."""
+        doc = self.controller.doc
+        selected = set(self.controller.selection)
+        return {
+            b.id
+            for b in doc.boards.values()
+            if b.id in selected or any(g in selected for g in doc.scope_chain(b.group_id))
+        }
+
     def rebuild(self) -> None:
         self._board_actors = {}
         used = 0
@@ -133,13 +172,8 @@ class Scene(QObject):
 
         doc = self.controller.doc
         evaluation = self.controller.evaluation
-        selected = set(self.controller.selection)
-        # A selected group selects everything inside it.
-        selected |= {
-            b.id
-            for b in doc.boards.values()
-            if any(g in selected for g in doc.scope_chain(b.group_id))
-        }
+        selected = self.selected_boards()
+        self._selected_boards = selected
         for board in doc.boards.values():
             if not doc.is_visible(board):
                 continue
@@ -163,7 +197,7 @@ class Scene(QObject):
                 if shape.rotation is not None:
                     axis, degrees = shape.rotation
                     for actor in (face, edge):
-                        actor.RotateWXYZ(degrees, *UNIT[Axis("xyz"[axis])])
+                        actor.RotateWXYZ(degrees, *UNIT[AXES[axis]])
                 edge_prop = edge.GetProperty()
                 edge_prop.SetColor(*_rgb(SELECTION_COLOR if is_selected else EDGE_COLOR))
                 edge_prop.SetLineWidth(2.5 if is_selected else 1.0)
@@ -195,10 +229,38 @@ class Scene(QObject):
         return self._pool[index]
 
     def board_at(self, x: int, y: int) -> str | None:
+        return self.pick(x, y)[0]
+
+    def pick(self, x: int, y: int) -> tuple[str | None, Vec3 | None]:
+        """The board under a display position and the hit point on its surface."""
         if not self._picker.Pick(x, y, 0, self.renderer):
-            return None
+            return None, None
         actor = self._picker.GetActor()
-        return self._actor_board.get(id(actor)) if actor is not None else None
+        board_id = self._actor_board.get(id(actor)) if actor is not None else None
+        if board_id is None:
+            return None, None
+        px, py, pz = self._picker.GetPickPosition()
+        return board_id, (px, py, pz)
+
+    def bounds(self, board_ids: set[str]) -> tuple[Vec3, Vec3] | None:
+        """World bounding box of the shown parts of ``board_ids``."""
+        parts = self.controller.evaluation.machining.parts
+        lows: list[Vec3] = []
+        highs: list[Vec3] = []
+        for board_id in board_ids:
+            if board_id not in self._board_actors:
+                continue
+            for shape in parts.get(board_id, []):
+                lo, hi = world_bounds(shape.origin, shape.size, shape.rotation)
+                lows.append(lo)
+                highs.append(hi)
+        if not lows:
+            return None
+        lo_arr, hi_arr = np.min(lows, axis=0), np.max(highs, axis=0)
+        return (
+            (float(lo_arr[0]), float(lo_arr[1]), float(lo_arr[2])),
+            (float(hi_arr[0]), float(hi_arr[1]), float(hi_arr[2])),
+        )
 
     # ================================================================== gizmo
     def _create_overlay(self) -> None:
@@ -212,14 +274,13 @@ class Scene(QObject):
         render_window.AddRenderer(self.overlay)
 
         self._arrows: dict[Axis, vtkActor] = {}
-        self._arrow_axis: dict[int, Axis] = {}
         for axis, direction in UNIT.items():
             arrow = pv.Arrow(
                 start=(0.0, 0.0, 0.0),
                 direction=direction,
                 tip_length=0.25,
-                tip_radius=0.07,
-                shaft_radius=0.025,
+                tip_radius=0.08,
+                shaft_radius=0.03,
             )
             mapper = vtkPolyDataMapper()
             mapper.SetInputData(arrow)
@@ -227,29 +288,30 @@ class Scene(QObject):
             actor.SetMapper(mapper)
             actor.GetProperty().SetColor(*_rgb(AXIS_COLORS[axis]))
             actor.GetProperty().SetAmbient(0.4)
+            actor.PickableOff()
             actor.VisibilityOff()
             self.overlay.AddActor(actor)
             self._arrows[axis] = actor
-            self._arrow_axis[id(actor)] = axis
         self._gizmo_origin: Vec3 | None = None
         self.renderer.AddObserver(vtkCommand.StartEvent, self._scale_gizmo)
 
     def gizmo_board(self) -> str | None:
+        """The board the gizmo belongs to when exactly one board is selected."""
         selection = self.controller.selection
         if len(selection) == 1 and selection[0] in self._board_actors:
             return selection[0]
         return None
 
+    def gizmo_origin(self) -> Vec3 | None:
+        """Where the gizmo is drawn (None: nothing selected)."""
+        return self._current_gizmo_origin()
+
     def _place_gizmo(self) -> None:
-        board_id = self.gizmo_board()
-        if board_id is None:
+        box = self.bounds(self._selected_boards)
+        if box is None:
             self._gizmo_origin = None
         else:
-            state = self.controller.evaluation.boards[board_id]
-            rotation = ("xyz".index(state.rotation_axis.value), state.angle)
-            lo, hi = world_bounds(
-                (state.x, state.y, state.z), state.size, rotation if state.rotated else None
-            )
+            lo, hi = box
             self._gizmo_origin = ((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
         self._show_gizmo_at(self._gizmo_origin)
 
@@ -260,37 +322,61 @@ class Scene(QObject):
                 actor.SetPosition(*origin)
 
     def world_per_pixel(self, point: Vec3) -> float:
-        camera = self.renderer.GetActiveCamera()
-        height = max(self.renderer.GetSize()[1], 1)
-        if camera.GetParallelProjection():
-            return 2.0 * camera.GetParallelScale() / height
-        position = camera.GetPosition()
-        direction = camera.GetDirectionOfProjection()
-        depth = sum((point[i] - position[i]) * direction[i] for i in range(3))
-        return 2.0 * max(depth, 1e-6) * math.tan(math.radians(camera.GetViewAngle() / 2)) / height
+        return world_per_pixel(self.renderer, point)
+
+    def _gizmo_scale(self, origin: Vec3) -> float:
+        return GIZMO_SIZE_PX * self.world_per_pixel(origin)
 
     def _scale_gizmo(self, *_args: object) -> None:
         origin = self._current_gizmo_origin()
         if origin is None:
             return
-        scale = GIZMO_SIZE_PX * self.world_per_pixel(origin)
+        scale = self._gizmo_scale(origin)
         for actor in self._arrows.values():
             actor.SetScale(scale, scale, scale)
 
     def _current_gizmo_origin(self) -> Vec3 | None:
-        if self._drag is None:
-            return self._gizmo_origin
-        anchor = list(self._drag.anchor)
-        anchor[self._drag.axis.position] += self._drag.delta
-        return (anchor[0], anchor[1], anchor[2])
+        o = self._gizmo_origin
+        if o is None or self._drag is None:
+            return o
+        d = self._drag.delta
+        return (o[0] + d[0], o[1] + d[1], o[2] + d[2])
 
-    def _arrow_at(self, x: int, y: int) -> Axis | None:
-        if self._gizmo_origin is None or not self._picker.Pick(x, y, 0, self.overlay):
+    def to_display(self, point: Vec3) -> Point2:
+        self.renderer.SetWorldPoint(point[0], point[1], point[2], 1.0)
+        self.renderer.WorldToDisplay()
+        x, y, _z = self.renderer.GetDisplayPoint()
+        return float(x), float(y)
+
+    def arrow_at(self, x: int, y: int) -> Axis | None:
+        """The gizmo arrow within ``GIZMO_PICK_PX`` of the cursor (screen space)."""
+        origin = self._gizmo_origin
+        if origin is None:
             return None
-        actor = self._picker.GetActor()
-        return self._arrow_axis.get(id(actor)) if actor is not None else None
+        scale = self._gizmo_scale(origin)
+        start = self.to_display(origin)
+        best: tuple[float, Axis] | None = None
+        for axis, unit in UNIT.items():
+            end = self.to_display(
+                (
+                    origin[0] + unit[0] * scale,
+                    origin[1] + unit[1] * scale,
+                    origin[2] + unit[2] * scale,
+                )
+            )
+            if math.hypot(end[0] - start[0], end[1] - start[1]) < 4:
+                continue  # looking along this axis: it cannot be dragged sensibly
+            distance = segment_distance((x, y), start, end)
+            if distance <= GIZMO_PICK_PX and (best is None or distance < best[0]):
+                best = (distance, axis)
+        return best[1] if best else None
 
-    def _ray(self, x: int, y: int) -> tuple[Vec3, Vec3]:
+    def _color_arrows(self, active: Axis | None) -> None:
+        for axis, actor in self._arrows.items():
+            color = HIGHLIGHT_COLOR if axis == active else AXIS_COLORS[axis]
+            actor.GetProperty().SetColor(*_rgb(color))
+
+    def _ray(self, x: float, y: float) -> tuple[Vec3, Vec3]:
         points = []
         for depth in (0.0, 1.0):
             self.renderer.SetDisplayPoint(x, y, depth)
@@ -302,76 +388,153 @@ class Scene(QObject):
         length = math.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2) or 1.0
         return near, (d[0] / length, d[1] / length, d[2] / length)
 
-    def _axis_t(self, drag_anchor: Vec3, axis: Axis, x: int, y: int) -> float:
+    def _axis_t(self, anchor: Vec3, axis: Axis, x: int, y: int) -> float:
         ray_start, ray_direction = self._ray(x, y)
-        return axis_parameter(drag_anchor, UNIT[axis], ray_start, ray_direction)
+        return axis_parameter(anchor, UNIT[axis], ray_start, ray_direction)
+
+    def plane_point(self, anchor: Vec3, normal: int, x: float, y: float) -> Vec3 | None:
+        """Where the ray under the cursor meets the plane through ``anchor``
+        perpendicular to world axis ``normal`` (None if parallel or behind)."""
+        start, direction = self._ray(x, y)
+        if abs(direction[normal]) < 1e-6:
+            return None
+        t = (anchor[normal] - start[normal]) / direction[normal]
+        if t < 0:
+            return None
+        return (
+            start[0] + t * direction[0],
+            start[1] + t * direction[1],
+            start[2] + t * direction[2],
+        )
 
     # ================================================================== pointer events
-    def press(self, x: int, y: int, ctrl: bool) -> None:
+    def press(self, x: int, y: int, ctrl: bool) -> bool:
         self._press = (x, y)
-        axis = self._arrow_at(x, y)
-        board_id = self.gizmo_board()
-        if axis is None or board_id is None or self._gizmo_origin is None:
-            return
+        self._press_board = self._press_point = None
+        axis = self.arrow_at(x, y)
+        if axis is not None and self._gizmo_origin is not None:
+            drag = self._new_drag(list(self.controller.selection), self._gizmo_origin)
+            drag.axis = axis
+            drag.t0 = self._axis_t(self._gizmo_origin, axis, x, y)
+            self._drag = drag
+            self._color_arrows(axis)
+            self.viewport.render()
+            return True
+        board_id, point = self.pick(x, y)
+        if board_id is None or point is None:
+            return False  # empty space: the view orbits
+        # On a part: a click selects, a drag moves (decided in move/release).
+        self._press_board = board_id
+        self._press_point = point
+        return True
+
+    def _new_drag(self, ids: list[str], anchor: Vec3) -> _Drag:
         doc = self.controller.doc
-        evaluation = self.controller.evaluation
-        drag = _Drag(
-            board_id,
-            axis,
-            self._gizmo_origin,
-            evaluation.boards[board_id].origin[axis.position],
-            self._axis_t(self._gizmo_origin, axis, x, y),
-        )
-        drag.targets = snap_targets(doc, evaluation, board_id, axis)
-        self._drag = drag
-        self._arrows[axis].GetProperty().SetColor(*_rgb(HIGHLIGHT_COLOR))
+        moved = doc.with_contents(ids)
+        boards = {b for b in moved if b in doc.boards}
+        single = ids[0] if len(ids) == 1 and ids[0] in doc.boards else None
+        return _Drag(ids=ids, boards=boards, single=single, anchor=anchor)
+
+    def _start_part_drag(self, ctrl: bool) -> _Drag | None:
+        board_id, point = self._press_board, self._press_point
+        if board_id is None or point is None:
+            return None
+        if board_id not in self._selected_boards:
+            selection = list(self.controller.selection) if ctrl else []
+            self.controller.set_selection([*selection, board_id])
+        drag = self._new_drag(list(self.controller.selection), point)
+        direction = self.renderer.GetActiveCamera().GetDirectionOfProjection()
+        if abs(direction[2]) >= FLOOR_DRAG_MIN_Z:
+            drag.normal = 2  # on the floor plane
+        else:
+            drag.normal = 0 if abs(direction[0]) > abs(direction[1]) else 1
+        return drag
 
     def move(self, x: int, y: int) -> bool:
         drag = self._drag
         if drag is None:
-            return False
-        raw_delta = self._axis_t(drag.anchor, drag.axis, x, y) - drag.t0
-        raw_start = drag.start + raw_delta
-        drag.snap = None
-        if self.snapping_enabled and not self.viewport.iren.interactor.GetShiftKey():
-            tolerance = self.snap_tolerance_px * self.world_per_pixel(drag.anchor)
-            drag.snap = best_snap(drag.targets, raw_start, tolerance)
-        if drag.snap is not None:
-            drag.delta = drag.snap.value - drag.start
-            self.status_message.emit(self.tr("Einrasten an: {f}").format(f=drag.snap.formula))
+            press = self._press
+            if self._press_board is None or press is None:
+                return False
+            if max(abs(x - press[0]), abs(y - press[1])) <= CLICK_TOLERANCE_PX:
+                return True
+            ctrl = bool(self.viewport.iren.interactor.GetControlKey())
+            drag = self._drag = self._start_part_drag(ctrl)
+            if drag is None:
+                return False
+
+        shift = bool(self.viewport.iren.interactor.GetShiftKey())
+        evaluation = self.controller.evaluation
+        raw = [0.0, 0.0, 0.0]
+        if drag.axis is not None:
+            raw[drag.axis.position] = self._axis_t(drag.anchor, drag.axis, x, y) - drag.t0
+            axes = [drag.axis]
         else:
-            drag.delta = float(round(raw_delta))
-            self.status_message.emit(
-                self.tr("Verschieben {axis}: {d} mm").format(
-                    axis=drag.axis.value.upper(), d=number(drag.delta)
-                )
-            )
+            hit = self.plane_point(drag.anchor, drag.normal, x, y)
+            if hit is None:
+                return True
+            raw = [hit[i] - drag.anchor[i] for i in range(3)]
+            raw[drag.normal] = 0.0
+            axes = [a for a in AXES if a.position != drag.normal]
+        delta = [float(round(v)) for v in raw]
+        drag.snaps = {}
+        if self.snapping_enabled and not shift and drag.single is not None:
+            tolerance = self.snap_tolerance_px * self.world_per_pixel(drag.anchor)
+            start = evaluation.boards[drag.single].origin
+            for axis in axes:
+                if axis not in drag.targets:
+                    drag.targets[axis] = snap_targets(
+                        self.controller.doc, evaluation, drag.single, axis
+                    )
+                i = axis.position
+                snap = best_snap(drag.targets[axis], start[i] + raw[i], tolerance)
+                if snap is not None:
+                    drag.snaps[axis] = snap
+                    delta[i] = snap.value - start[i]
+        drag.delta = delta
+        self._status(drag, axes)
         self._preview(drag)
         return True
 
+    def _status(self, drag: _Drag, axes: list[Axis]) -> None:
+        parts = []
+        for axis in axes:
+            snap = drag.snaps.get(axis)
+            name = axis.value.upper()
+            if snap is not None:
+                parts.append(self.tr("{0} an {1}").format(name, snap.formula))
+            else:
+                parts.append(f"{name} {number(drag.delta[axis.position])} mm")
+        self.status_message.emit(
+            self.tr("Verschieben: {0}   (Umschalt: ohne Einrasten, Esc: abbrechen)").format(
+                ", ".join(parts)
+            )
+        )
+
     def _preview(self, drag: _Drag) -> None:
-        shapes = self.controller.evaluation.machining.parts[drag.board_id]
-        for (face, edge), shape in zip(
-            self._board_actors.get(drag.board_id, []), shapes, strict=False
-        ):
-            moved = list(shape.origin)
-            moved[drag.axis.position] += drag.delta
-            face.SetPosition(*moved)
-            edge.SetPosition(*moved)
+        parts = self.controller.evaluation.machining.parts
+        d = drag.delta
+        for board_id in drag.boards:
+            for (face, edge), shape in zip(
+                self._board_actors.get(board_id, []), parts.get(board_id, []), strict=False
+            ):
+                o = shape.origin
+                face.SetPosition(o[0] + d[0], o[1] + d[1], o[2] + d[2])
+                edge.SetPosition(o[0] + d[0], o[1] + d[1], o[2] + d[2])
         self._show_gizmo_at(self._current_gizmo_origin())
         self.viewport.render()
 
     def release(self, x: int, y: int, ctrl: bool) -> None:
         press, self._press = self._press, None
+        board_id, self._press_board = self._press_board, None
         drag, self._drag = self._drag, None
         if drag is not None:
-            self._arrows[drag.axis].GetProperty().SetColor(*_rgb(AXIS_COLORS[drag.axis]))
+            self._color_arrows(None)
             self.status_message.emit("")
             self._commit(drag)
             return
         if press is None or max(abs(x - press[0]), abs(y - press[1])) > CLICK_TOLERANCE_PX:
             return
-        board_id = self.board_at(x, y)
         selection = list(self.controller.selection)
         if ctrl:
             if board_id is not None:
@@ -383,18 +546,55 @@ class Scene(QObject):
         else:
             self.controller.set_selection([board_id] if board_id else [])
 
-    def _commit(self, drag: _Drag) -> None:
-        prop = drag.axis.value
-        value = drag.start + drag.delta
-        if drag.snap is not None:
-            formula = drag.snap.formula
-        elif abs(drag.delta) >= 0.5:
-            current = self.controller.doc.display_expression(drag.board_id, prop)
-            formula = add_offset(current, drag.delta)
+    def hover(self, x: int, y: int) -> None:
+        axis = self.arrow_at(x, y)
+        if axis == self._hover_axis:
+            return
+        self._hover_axis = axis
+        self._color_arrows(axis)
+        self.viewport.render()
+        if axis is not None:
+            self.status_message.emit(
+                self.tr("Ziehen: entlang {0} verschieben").format(axis.value.upper())
+            )
         else:
+            self.status_message.emit("")
+
+    def cancel(self) -> None:
+        drag, self._drag = self._drag, None
+        self._press = None
+        self._press_board = self._press_point = None
+        if drag is not None:
+            self._color_arrows(None)
+            self.status_message.emit(self.tr("Verschieben abgebrochen"))
+            self.rebuild()
+
+    def context_menu(self, x: int, y: int) -> None:
+        board_id = self.board_at(x, y)
+        if board_id is not None and board_id not in self._selected_boards:
+            self.controller.set_selection([board_id])
+        ratio = self.viewport.devicePixelRatioF() or 1.0
+        height = self.renderer.GetRenderWindow().GetSize()[1]
+        self.context_menu_requested.emit(round(x / ratio), round((height - y - 1) / ratio))
+
+    def _commit(self, drag: _Drag) -> None:
+        if all(abs(v) < 0.5 for v in drag.delta):
             self.rebuild()  # undo the preview
             return
-        before = self.controller.doc.stored_expression(drag.board_id, prop)
-        self.controller.move_board(drag.board_id, drag.axis, formula, value)
-        if self.controller.doc.stored_expression(drag.board_id, prop) == before:
+        undo_count = self.controller.undo_stack.count()
+        if drag.single is not None:
+            moves: dict[Axis, tuple[str, float]] = {}
+            start = self.controller.evaluation.boards[drag.single].origin
+            for axis in AXES:
+                i = axis.position
+                snap = drag.snaps.get(axis)
+                if snap is not None:
+                    moves[axis] = (snap.formula, snap.value)
+                elif abs(drag.delta[i]) >= 0.5:
+                    current = self.controller.doc.display_expression(drag.single, axis.value)
+                    moves[axis] = (add_offset(current, drag.delta[i]), start[i] + drag.delta[i])
+            self.controller.place_board(drag.single, moves)
+        else:
+            self.controller.translate(drag.ids, (drag.delta[0], drag.delta[1], drag.delta[2]))
+        if self.controller.undo_stack.count() == undo_count:
             self.rebuild()

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
+    QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QStyle,
     QWidget,
@@ -59,6 +61,15 @@ class MainWindow(QMainWindow):
         self.apply_preferences(Preferences.load())
         self.statusBar().showMessage(self.tr("Bereit"), 3000)
         self.scene.status_message.connect(self._show_status)
+        self.scene.context_menu_requested.connect(self.show_view_menu)
+        self.navigation_hint = QLabel(
+            self.tr(
+                "Links ziehen: drehen · Rechts/Mitte ziehen: schieben · Rad: zoomen · "
+                "Teil ziehen: verschieben · Rechtsklick: Menü"
+            )
+        )
+        self.navigation_hint.setStyleSheet("color: palette(placeholder-text)")
+        self.statusBar().addPermanentWidget(self.navigation_hint)
 
         self.controller.file_state_changed.connect(self._update_title)
         self._update_title()
@@ -326,6 +337,26 @@ class MainWindow(QMainWindow):
                 if first:
                     self.viewport.fit_view()
                 return
+
+    def show_view_menu(self, x: int, y: int) -> QMenu:
+        """Context menu of the 3D view (right click)."""
+        menu = QMenu(self)
+        tree = self.tree_panel
+        if self.controller.selection:
+            menu.addActions([tree.action_rename, tree.action_duplicate, tree.action_delete])
+            menu.addSeparator()
+            menu.addActions([tree.action_toggle_visible, tree.action_transparent])
+            menu.addAction(tree.action_group)
+            menu.addSeparator()
+        menu.addAction(self.action_add_board)
+        menu.addAction(self.action_insert_template)
+        menu.addSeparator()
+        menu.addAction(self.action_fit)
+        views = menu.addMenu(self.tr("Ansicht"))
+        views.addActions(list(self.view_actions.values()))
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        menu.popup(self.viewport.mapToGlobal(QPoint(x, y)))
+        return menu
 
     def _set_snapping(self, enabled: bool) -> None:
         self.scene.snapping_enabled = enabled
