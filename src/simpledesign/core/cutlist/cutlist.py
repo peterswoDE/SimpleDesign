@@ -1,9 +1,9 @@
 """Cut list (Zuschnittliste).
 
 Parts are merged into one row when material, dimensions and grain direction
-are equal (plan, phase 1). For materials *with* grain, length and width stay
-apart (length = along the grain). Without grain (MDF …) a 300 x 600 part equals
-a 600 x 300 part, so we normalise to length >= width.
+are equal. When the grain matters, length and width stay apart (length =
+along the grain). Without grain (MDF …, or a part with "ignore grain") a
+300 x 600 part equals a 600 x 300 part, so we normalise to length >= width.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ type CsvHeaders = tuple[str, str, str, str, str, str]
 
 @dataclass(frozen=True, slots=True)
 class CutRow:
+    material_id: str
     material: str
     length: float
     width: float
@@ -31,29 +32,35 @@ class CutRow:
 
 
 def build_cutlist(doc: Document, evaluation: Evaluation) -> list[CutRow]:
-    parts_by_key: dict[tuple[str, float, float, float], list[tuple[str, int]]] = {}
-    grain_of: dict[str, bool] = {}
+    type Key = tuple[str, float, float, float, bool]
+    parts_by_key: dict[Key, list[tuple[str, int]]] = {}
     for board in doc.boards.values():
         state = evaluation.boards[board.id]
-        material = doc.materials[board.material_id]
-        grain_of[material.name] = material.has_grain
+        grain = doc.has_grain(board.id)
         length, width = state.length, state.width
-        if not material.has_grain and width > length:
+        if not grain and width > length:
             length, width = width, length
-        key = (material.name, round(length, 1), round(width, 1), round(state.thickness, 1))
+        key = (
+            board.material_id,
+            round(length, 1),
+            round(width, 1),
+            round(state.thickness, 1),
+            grain,
+        )
         parts_by_key.setdefault(key, []).append((board.name, state.count))
 
     rows = [
         CutRow(
-            material=material,
+            material_id=material_id,
+            material=doc.materials[material_id].name,
             length=length,
             width=width,
             thickness=thickness,
             quantity=sum(count for _, count in parts),
             names=tuple(sorted(name for name, _ in parts)),
-            has_grain=grain_of[material],
+            has_grain=grain,
         )
-        for (material, length, width, thickness), parts in parts_by_key.items()
+        for (material_id, length, width, thickness, grain), parts in parts_by_key.items()
     ]
     rows.sort(key=lambda r: (r.material, -r.thickness, -r.length, -r.width))
     return rows

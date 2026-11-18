@@ -14,7 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from simpledesign.core.materials.material import Material, MaterialKind
+from simpledesign.core.materials.library import BUILTIN_MATERIALS
+from simpledesign.core.materials.material import material_from_dict, material_to_dict
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.part import (
     EDITABLE_PROPERTIES,
@@ -25,14 +26,30 @@ from simpledesign.core.model.part import (
     Parameter,
     default_expressions,
 )
+from simpledesign.core.model.settings import CutSettings
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 FILE_SUFFIX = ".sdz"
 
 type Json = dict[str, Any]
 
+
+def _migrate_1_to_2(data: Json) -> Json:
+    """Phase 2: stock size/price per material, grain override, cut settings."""
+    builtins = {m.id: material_to_dict(m) for m in BUILTIN_MATERIALS}
+    for m in data["materials"]:
+        # Version-1 files only knew built-in materials: take their stock data.
+        known = builtins.get(m["id"], {})
+        for key in ("stock_length", "stock_width", "edge_trim", "price"):
+            m.setdefault(key, known.get(key, 0.0 if key == "edge_trim" else None))
+    for b in data["boards"]:
+        b.setdefault("ignore_grain", False)
+    data.setdefault("cut_settings", {"kerf": 4.0, "crosscut_allowance": 10.0})
+    return data
+
+
 # MIGRATIONS[n] upgrades a version-n dict to version n + 1.
-MIGRATIONS: dict[int, Callable[[Json], Json]] = {}
+MIGRATIONS: dict[int, Callable[[Json], Json]] = {1: _migrate_1_to_2}
 
 
 class FileFormatError(Exception):
@@ -61,21 +78,15 @@ def to_dict(doc: Document) -> Json:
                 "pattern_axis": b.pattern_axis.value,
                 "visible": b.visible,
                 "transparent": b.transparent,
+                "ignore_grain": b.ignore_grain,
             }
             for b in doc.boards.values()
         ],
-        "materials": [
-            {
-                "id": m.id,
-                "name": m.name,
-                "kind": m.kind.value,
-                "thickness": m.thickness,
-                "width": m.width,
-                "has_grain": m.has_grain,
-                "color": m.color,
-            }
-            for m in doc.materials.values()
-        ],
+        "materials": [material_to_dict(m) for m in doc.materials.values()],
+        "cut_settings": {
+            "kerf": doc.cut_settings.kerf,
+            "crosscut_allowance": doc.cut_settings.crosscut_allowance,
+        },
     }
 
 
@@ -84,15 +95,13 @@ def from_dict(data: Json) -> Document:
     doc = Document()
     try:
         for m in data["materials"]:
-            doc.materials[m["id"]] = Material(
-                id=m["id"],
-                name=m["name"],
-                kind=MaterialKind(m["kind"]),
-                thickness=float(m["thickness"]),
-                width=None if m["width"] is None else float(m["width"]),
-                has_grain=bool(m["has_grain"]),
-                color=m["color"],
-            )
+            material = material_from_dict(m)
+            doc.materials[material.id] = material
+        settings = data["cut_settings"]
+        doc.cut_settings = CutSettings(
+            kerf=float(settings["kerf"]),
+            crosscut_allowance=float(settings["crosscut_allowance"]),
+        )
         for g in data["groups"]:
             doc.groups[g["id"]] = Group(g["id"], g["name"], g["parent_id"], bool(g["visible"]))
         for p in data["parameters"]:
@@ -112,6 +121,7 @@ def from_dict(data: Json) -> Document:
                 pattern_axis=Axis(b["pattern_axis"]),
                 visible=bool(b["visible"]),
                 transparent=bool(b["transparent"]),
+                ignore_grain=bool(b["ignore_grain"]),
             )
     except (KeyError, TypeError, ValueError, AttributeError) as error:
         raise FileFormatError(f"invalid file content: {error!r}") from error
@@ -139,7 +149,10 @@ def migrate(data: Json) -> Json:
     if version > FORMAT_VERSION:
         raise FileFormatError(f"file version {version} is newer than this program")
     while version < FORMAT_VERSION:
-        data = MIGRATIONS[version](data)
+        try:
+            data = MIGRATIONS[version](data)
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise FileFormatError(f"invalid version-{version} file: {error!r}") from error
         version += 1
         data["format_version"] = version
     return data

@@ -31,6 +31,10 @@ def test_version_1_file_still_opens() -> None:
     assert not ev.errors
     assert len(doc.boards) == 6
     assert sum(r.quantity for r in build_cutlist(doc, ev)) == 9
+    # Migration 1 -> 2 fills stock data and cut settings.
+    multiplex = doc.materials["builtin.multiplex_birke_18"]
+    assert (multiplex.stock_length, multiplex.stock_width) == (2500, 1250)
+    assert doc.cut_settings.kerf == 4
 
 
 def test_newer_version_rejected(tmp_path: Path) -> None:

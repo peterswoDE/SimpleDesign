@@ -108,3 +108,6 @@ class Board:
     pattern_axis: Axis = Axis.Z
     visible: bool = True
     transparent: bool = False
+    # Grain direction does not matter for this part (e.g. hidden inner parts):
+    # the cut list may turn it. Has no effect for materials without grain.
+    ignore_grain: bool = False

@@ -29,6 +29,7 @@ from simpledesign.core.model.part import (
     Orientation,
     Parameter,
 )
+from simpledesign.core.model.settings import CutSettings
 from simpledesign.core.params.errors import ErrorCode, FormulaError
 from simpledesign.core.params.expression import (
     FUNCTIONS,
@@ -70,6 +71,7 @@ class Document:
         self.boards: dict[str, Board] = {}
         # Copies of all materials used - the file stays readable without the library.
         self.materials: dict[str, Material] = {}
+        self.cut_settings = CutSettings()
 
     # ================================================================== lookup
     def name_of(self, obj_id: str) -> str:
@@ -273,12 +275,13 @@ class Document:
         self,
         name: str | None = None,
         group_id: str | None = None,
-        material_id: str = DEFAULT_MATERIAL_ID,
+        material_id: str | Material = DEFAULT_MATERIAL_ID,
         orientation: Orientation = Orientation.XY,
     ) -> Board:
         name = name or self.unique_name("Brett_1", is_parameter=False)
         self.check_name(name, is_parameter=False)
-        board = Board(new_id(), name, material_id, group_id, orientation)
+        first_id = material_id if isinstance(material_id, str) else material_id.id
+        board = Board(new_id(), name, first_id, group_id, orientation)
         self.boards[board.id] = board
         self.set_material(board.id, material_id)
         return board
@@ -296,18 +299,44 @@ class Document:
         else:
             raise KeyError(obj_id)
 
-    def set_material(self, board_id: str, material_id: str) -> None:
-        """Assign a material; a plain-number thickness follows the material."""
-        if material_id not in self.materials:
-            self.materials[material_id] = builtin_material(material_id)
-        material = self.materials[material_id]
+    def set_material(self, board_id: str, material: str | Material) -> None:
+        """Assign a material; a plain-number thickness follows the material.
+
+        ``material`` is a library material (copied into the document unless the
+        document already has its own copy of that ID) or the ID of a material
+        the document already contains / a built-in one.
+        """
+        if isinstance(material, Material):
+            self.materials.setdefault(material.id, material)
+            material_id = material.id
+        else:
+            material_id = material
+            if material_id not in self.materials:
+                self.materials[material_id] = builtin_material(material_id)
         board = self.boards[board_id]
         board.material_id = material_id
+        self._apply_material_size(board, self.materials[material_id])
+        self.prune_materials()
+
+    def _apply_material_size(self, board: Board, material: Material) -> None:
         if is_plain_number(board.expressions["thickness"]):
             board.expressions["thickness"] = format_number(material.thickness)
         if material.width is not None and is_plain_number(board.expressions["width"]):
             board.expressions["width"] = format_number(material.width)
-        self.prune_materials()
+
+    def update_material(self, material: Material) -> None:
+        """Replace the document's copy of a material (e.g. from the library)."""
+        if material.id not in self.materials:
+            raise KeyError(material.id)
+        self.materials[material.id] = material
+        for board in self.boards.values():
+            if board.material_id == material.id:
+                self._apply_material_size(board, material)
+
+    def has_grain(self, board_id: str) -> bool:
+        """Must the part's length follow the grain of the stock?"""
+        board = self.boards[board_id]
+        return self.materials[board.material_id].has_grain and not board.ignore_grain
 
     def prune_materials(self) -> None:
         used = {board.material_id for board in self.boards.values()}
