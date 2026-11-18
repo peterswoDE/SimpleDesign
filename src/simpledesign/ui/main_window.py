@@ -21,6 +21,7 @@ from simpledesign.core.io import sdz
 from simpledesign.core.io.export import ExportError, export
 from simpledesign.ui.cutlist_panel import CutlistPanel
 from simpledesign.ui.cutplan_panel import CutplanPanel
+from simpledesign.ui.drawing_dialog import DrawingDialog
 from simpledesign.ui.joints_panel import JointsPanel
 from simpledesign.ui.materials_dialog import MaterialsDialog
 from simpledesign.ui.parameters_panel import ParametersPanel
@@ -117,6 +118,10 @@ class MainWindow(QMainWindow):
         self.action_export = QAction(self.tr("3D-Modell &exportieren…"), self)
         self.action_export.setToolTip(self.tr("Als STEP, STL oder OBJ exportieren"))
         self.action_export.triggered.connect(self.export_model)
+        self.action_drawing = QAction(self.tr("&Zeichnung…"), self)
+        self.action_drawing.setToolTip(self.tr("Technische Zeichnung als PDF oder DXF"))
+        self.action_drawing.setShortcut(QKeySequence("Ctrl+P"))
+        self.action_drawing.triggered.connect(self.show_drawing)
         self.action_materials = QAction(self.tr("&Materialbibliothek…"), self)
         self.action_materials.triggered.connect(self.edit_materials)
 
@@ -188,6 +193,7 @@ class MainWindow(QMainWindow):
         )
         file_menu.addSeparator()
         file_menu.addAction(self.action_export)
+        file_menu.addAction(self.action_drawing)
         file_menu.addAction(self.cutlist_panel.export_action)
         file_menu.addSeparator()
         file_menu.addAction(self.action_quit)
@@ -418,6 +424,12 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.export_to(Path(path))
+
+    def show_drawing(self) -> DrawingDialog:
+        dialog = DrawingDialog(self.controller, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.open()
+        return dialog
 
     def export_to(self, path: Path) -> bool:
         try:

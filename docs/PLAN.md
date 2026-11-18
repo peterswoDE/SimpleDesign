@@ -259,6 +259,8 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 - Einzelteilzeichnungen mit Bohrungen/Fräsungen.
 - A4/A3, Schriftfeld; Export PDF + DXF.
 
+> **Stand Phase 6 (umgesetzt):** „Datei → Zeichnung…“ (Strg+P) zeigt die Blätter mit Vorschau und Blättern. Übersichtsblatt: Vorder-, Seiten- (rechts daneben) und Draufsicht (darunter, Projektionsmethode 1) plus Iso-Ansicht, HLR mit verdeckten Kanten (abschaltbar), Gesamtmaße, Normmaßstab automatisch. Pro Zuschnitt-Position ein Einzelteilblatt: Fläche + zwei Kantenansichten mit L/B/D, Bohrungen nummeriert mit Bohrtabelle (X/Y/Z, Ø, Tiefe). Schriftfeld mit Titel, Material, Anzahl, Maß, Maßstab, Datum, Blatt n von m. Export als PDF (maßstäblich, eine Seite je Blatt) und DXF (ezdxf, MIT; Layer SICHTBAR/VERDECKT/MASS/TEXT/RAHMEN, mm). Manuelle Bemaßung → Phase 8.
+
 ### Phase 7 – Einstellungen & Auslieferung
 - Englische Übersetzung entfällt vorerst (Texte bleiben zentral in `ui/texts.py`).
 - Einstellungen, Tastenkürzel, freie Rotationswinkel, Performance.
