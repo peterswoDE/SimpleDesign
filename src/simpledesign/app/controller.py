@@ -24,6 +24,7 @@ from simpledesign.core.io import sdz
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
+from simpledesign.core.model.joint import JointKind
 from simpledesign.core.model.part import Axis, Orientation
 from simpledesign.core.model.settings import CutSettings
 from simpledesign.core.params.errors import ErrorCode
@@ -219,6 +220,31 @@ class Controller(QObject):
                 d.boards[board_id].ignore_grain = ignore
 
         self.execute(self.tr("Faserrichtung ändern"), change)
+
+    # ------------------------------------------------------------------ joints
+    def add_joint(self, kind: JointKind, main_id: str, attached_id: str) -> str:
+        return self.execute(
+            self.tr("Verbindung anlegen"), lambda d: d.add_joint(kind, main_id, attached_id).id
+        )
+
+    def set_joint_param(self, joint_id: str, name: str, value: float) -> None:
+        self.execute(
+            self.tr("Verbindung ändern"),
+            lambda d: d.set_joint_param(joint_id, name, value),
+            merge_key=f"joint:{joint_id}:{name}",
+        )
+
+    def swap_joint(self, joint_id: str) -> None:
+        self.execute(self.tr("Haupt-/Anschlussteil tauschen"), lambda d: d.swap_joint(joint_id))
+
+    def delete_joints(self, joint_ids: Iterable[str]) -> None:
+        ids = [i for i in joint_ids if i in self.doc.joints]
+
+        def change(d: Document) -> None:
+            for joint_id in ids:
+                del d.joints[joint_id]
+
+        self.execute(self.tr("Verbindung löschen"), change)
 
     def set_cut_settings(self, settings: CutSettings) -> None:
         def change(d: Document) -> None:

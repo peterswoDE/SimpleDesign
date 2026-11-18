@@ -17,6 +17,7 @@ from typing import Any
 from simpledesign.core.materials.library import BUILTIN_MATERIALS
 from simpledesign.core.materials.material import material_from_dict, material_to_dict
 from simpledesign.core.model.document import Document
+from simpledesign.core.model.joint import Joint, JointKind, default_params
 from simpledesign.core.model.part import (
     EDITABLE_PROPERTIES,
     Axis,
@@ -28,7 +29,7 @@ from simpledesign.core.model.part import (
 )
 from simpledesign.core.model.settings import CutSettings
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 FILE_SUFFIX = ".sdz"
 
 type Json = dict[str, Any]
@@ -48,8 +49,14 @@ def _migrate_1_to_2(data: Json) -> Json:
     return data
 
 
+def _migrate_2_to_3(data: Json) -> Json:
+    """Phase 3: joints."""
+    data.setdefault("joints", [])
+    return data
+
+
 # MIGRATIONS[n] upgrades a version-n dict to version n + 1.
-MIGRATIONS: dict[int, Callable[[Json], Json]] = {1: _migrate_1_to_2}
+MIGRATIONS: dict[int, Callable[[Json], Json]] = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
 
 
 class FileFormatError(Exception):
@@ -83,6 +90,16 @@ def to_dict(doc: Document) -> Json:
             for b in doc.boards.values()
         ],
         "materials": [material_to_dict(m) for m in doc.materials.values()],
+        "joints": [
+            {
+                "id": j.id,
+                "kind": j.kind.value,
+                "main_id": j.main_id,
+                "attached_id": j.attached_id,
+                "params": dict(j.params),
+            }
+            for j in doc.joints.values()
+        ],
         "cut_settings": {
             "kerf": doc.cut_settings.kerf,
             "crosscut_allowance": doc.cut_settings.crosscut_allowance,
@@ -123,6 +140,11 @@ def from_dict(data: Json) -> Document:
                 transparent=bool(b["transparent"]),
                 ignore_grain=bool(b["ignore_grain"]),
             )
+        for j in data["joints"]:
+            kind = JointKind(j["kind"])
+            params = default_params(kind)
+            params.update({k: float(v) for k, v in j["params"].items() if k in params})
+            doc.joints[j["id"]] = Joint(j["id"], kind, j["main_id"], j["attached_id"], params)
     except (KeyError, TypeError, ValueError, AttributeError) as error:
         raise FileFormatError(f"invalid file content: {error!r}") from error
     _check_references(doc)
@@ -140,6 +162,9 @@ def _check_references(doc: Document) -> None:
     for b in doc.boards.values():
         if b.material_id not in doc.materials:
             raise FileFormatError(f"board {b.id} has an unknown material")
+    for j in doc.joints.values():
+        if j.main_id not in doc.boards or j.attached_id not in doc.boards:
+            raise FileFormatError(f"joint {j.id} refers to an unknown board")
 
 
 def migrate(data: Json) -> Json:

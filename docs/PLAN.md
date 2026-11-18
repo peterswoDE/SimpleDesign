@@ -232,6 +232,8 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 - 3c: Zapfen, Fingerzinken, Schwalbenschwanz.
 - Zuschnittliste fasst Teile nur noch zusammen, wenn auch die Bearbeitungen gleich sind.
 
+> **Stand Phase 3a+3b (umgesetzt):** Dübel, Schrauben, Nut und Falz. Eine Verbindung entsteht aus zwei gewählten Brettern (zuerst gewähltes = Hauptteil) über das Menü „Verbindung“ und wird im Dock „Verbindungen“ bearbeitet. Bohrbild: Randabstand 50 mm, max. Abstand 150 mm (Dübel) bzw. 200 mm (Schrauben), Anzahl automatisch (mind. 2) oder fest. Nut/Falz verlängern das Anschlussteil um die Tiefe minus Spiel (Rohmaß in Zuschnittliste und Schnittplan). Bohrungen/Ausschnitte werden mit OCP-Booleschen Operationen erzeugt (Anzeige und STEP/STL/OBJ). Zuschnittliste mit Spalte „Bearbeitung“ und Beschläge-Tabelle. Dateiformat Version 3. Offen: Taschen/Fräsungen (3b) und 3c.
+
 ### Phase 4 – Vorlagen
 - **Vorlage = gespeicherte Gruppe mit freigegebenen Parametern** (gleiches Format wie ein Dokumentausschnitt). Dadurch gibt es nur ein Format: eingebaute Vorlagen und eigene „Gruppe als Vorlage speichern“ funktionieren identisch.
 - Eingebaut: Regal, Korpus/Schrank (Fachböden, Rückwand in Nut), Tisch, Bank.
@@ -286,7 +288,7 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 
 ## 9. Offene Punkte (später klären)
 
-- Genaue Regeln für Dübel-/Schraubenabstände (eigene Vorgaben?) – vor Phase 3.
+- ~~Genaue Regeln für Dübel-/Schraubenabstände~~ – geklärt: Randabstand 50, max. Abstand 150/200 mm, pro Verbindung einstellbar.
 - Welche Schnittmaschine (Formatkreissäge, Tauchsäge, Baumarkt-Zuschnitt) → Optimierungsregeln – vor Phase 2.
 - Kantenumleimer/Furnierkanten in der Zuschnittliste (Maßabzug?) – vor Phase 2.
 - Rundungen/Fasen an Kanten – frühestens Phase 5.

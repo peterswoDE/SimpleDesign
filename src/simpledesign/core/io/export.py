@@ -13,9 +13,11 @@ from pathlib import Path
 
 import numpy as np
 
-from simpledesign.core.geometry.mesh import box_mesh
+from simpledesign.core.geometry.mesh import make_shape, part_mesh
 from simpledesign.core.model.document import Document
-from simpledesign.core.model.evaluate import Evaluation, Vec3
+from simpledesign.core.model.evaluate import Evaluation
+from simpledesign.core.model.machining import Feature
+from simpledesign.core.model.state import Vec3
 
 STEP_SUFFIXES = (".step", ".stp")
 EXPORT_SUFFIXES = (*STEP_SUFFIXES, ".stl", ".obj")
@@ -29,7 +31,8 @@ class ExportError(Exception):
 class ExportBody:
     name: str
     origin: Vec3  # min corner
-    size: Vec3  # world-axis-aligned size
+    size: Vec3  # world-axis-aligned (rough) size
+    features: tuple[Feature, ...] = ()  # machining, relative to ``origin``
 
 
 def export_bodies(doc: Document, evaluation: Evaluation) -> list[ExportBody]:
@@ -37,11 +40,10 @@ def export_bodies(doc: Document, evaluation: Evaluation) -> list[ExportBody]:
     for board in doc.boards.values():
         if not doc.is_visible(board):
             continue
-        state = evaluation.boards[board.id]
-        origins = state.instance_origins()
-        for i, origin in enumerate(origins):
-            name = board.name if len(origins) == 1 else f"{board.name}_{i + 1}"
-            bodies.append(ExportBody(name, origin, state.size))
+        shapes = evaluation.machining.parts[board.id]
+        for i, shape in enumerate(shapes):
+            name = board.name if len(shapes) == 1 else f"{board.name}_{i + 1}"
+            bodies.append(ExportBody(name, shape.origin, shape.size, shape.features))
     return bodies
 
 
@@ -61,21 +63,23 @@ def export(doc: Document, evaluation: Evaluation, path: Path) -> None:
 
 # ====================================================================== STEP
 def write_step(bodies: list[ExportBody], path: Path) -> None:
-    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
-    from OCP.gp import gp_Pnt
+    from OCP.gp import gp_Trsf, gp_Vec
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPCAFControl import STEPCAFControl_Writer
     from OCP.STEPControl import STEPControl_AsIs
     from OCP.TCollection import TCollection_ExtendedString
     from OCP.TDataStd import TDataStd_Name
     from OCP.TDocStd import TDocStd_Document
+    from OCP.TopLoc import TopLoc_Location
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
 
     # An XCAF document carries names (and later colours) into the STEP file.
     cad_doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
     shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(cad_doc.Main())
     for body in bodies:
-        shape = BRepPrimAPI_MakeBox(gp_Pnt(*body.origin), *body.size).Shape()
+        move = gp_Trsf()
+        move.SetTranslation(gp_Vec(*body.origin))
+        shape = make_shape(body.size, body.features).Moved(TopLoc_Location(move))
         label = shape_tool.AddShape(shape, False)
         TDataStd_Name.Set_s(label, TCollection_ExtendedString(body.name))
     writer = STEPCAFControl_Writer()
@@ -89,7 +93,7 @@ def write_step(bodies: list[ExportBody], path: Path) -> None:
 # ====================================================================== meshes
 def _triangles(body: ExportBody) -> np.ndarray:
     """Triangles of a body as an array of shape (n, 3, 3)."""
-    mesh = box_mesh(body.size)
+    mesh = part_mesh(body.size, body.features)
     corners = mesh.faces.reshape(-1, 4)[:, 1:]  # drop the leading "3"
     triangles: np.ndarray = mesh.points[corners] + np.array(body.origin)
     return triangles
@@ -124,7 +128,7 @@ def write_obj(bodies: list[ExportBody], path: Path) -> None:
     lines = ["# SimpleDesign OBJ export, units: mm"]
     offset = 1  # OBJ indices start at 1 and count over the whole file
     for body in bodies:
-        mesh = box_mesh(body.size)
+        mesh = part_mesh(body.size, body.features)
         points = mesh.points + np.array(body.origin)
         lines.append(f"o {_obj_name(body.name)}")
         lines += [f"v {x:.4f} {y:.4f} {z:.4f}" for x, y, z in points]

@@ -21,6 +21,7 @@ from collections.abc import Iterable, Mapping
 from simpledesign.core.ids import new_id
 from simpledesign.core.materials.library import DEFAULT_MATERIAL_ID, builtin_material
 from simpledesign.core.materials.material import Material
+from simpledesign.core.model.joint import Joint, JointKind, default_params
 from simpledesign.core.model.part import (
     EDITABLE_PROPERTIES,
     PROPERTIES,
@@ -71,6 +72,7 @@ class Document:
         self.boards: dict[str, Board] = {}
         # Copies of all materials used - the file stays readable without the library.
         self.materials: dict[str, Material] = {}
+        self.joints: dict[str, Joint] = {}
         self.cut_settings = CutSettings()
 
     # ================================================================== lookup
@@ -383,6 +385,30 @@ class Document:
         else:
             self.parameters[obj_id].group_id = parent
 
+    # ================================================================== joints
+    def add_joint(self, kind: JointKind, main_id: str, attached_id: str) -> Joint:
+        if main_id not in self.boards or attached_id not in self.boards:
+            raise KeyError("a joint needs two boards")
+        if main_id == attached_id:
+            raise ValueError("a joint needs two different boards")
+        joint = Joint(new_id(), kind, main_id, attached_id, default_params(kind))
+        self.joints[joint.id] = joint
+        return joint
+
+    def set_joint_param(self, joint_id: str, name: str, value: float) -> None:
+        joint = self.joints[joint_id]
+        if name not in default_params(joint.kind):
+            raise KeyError(name)
+        joint.params[name] = float(value)
+
+    def swap_joint(self, joint_id: str) -> None:
+        """Exchange main and attached part."""
+        joint = self.joints[joint_id]
+        joint.main_id, joint.attached_id = joint.attached_id, joint.main_id
+
+    def joints_of(self, board_id: str) -> list[Joint]:
+        return [j for j in self.joints.values() if board_id in (j.main_id, j.attached_id)]
+
     # ================================================================== delete
     def with_contents(self, ids: Iterable[str]) -> set[str]:
         """``ids`` plus everything inside the groups among them."""
@@ -427,6 +453,11 @@ class Document:
             self.parameters.pop(obj_id, None)
             self.groups.pop(obj_id, None)
             self.boards.pop(obj_id, None)
+            self.joints.pop(obj_id, None)
+        # Joints of deleted boards go with them.
+        for joint in list(self.joints.values()):
+            if joint.main_id not in self.boards or joint.attached_id not in self.boards:
+                del self.joints[joint.id]
         self.prune_materials()
 
     # ================================================================== duplicate
@@ -468,4 +499,12 @@ class Document:
             board.name = self.unique_name(board.name, is_parameter=False)
             board.expressions = {k: remap(v) for k, v in board.expressions.items()}
             self.boards[board.id] = board
+        # Joints between two copied boards are copied too.
+        for joint in list(self.joints.values()):
+            if joint.main_id in copied and joint.attached_id in copied:
+                twin = copy.deepcopy(joint)
+                twin.id = new_id()
+                twin.main_id = mapping[joint.main_id]
+                twin.attached_id = mapping[joint.attached_id]
+                self.joints[twin.id] = twin
         return [mapping[i] for i in top]

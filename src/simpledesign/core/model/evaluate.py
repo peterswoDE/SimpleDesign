@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from simpledesign.core.model.document import Document, node_key, ref_key
+from simpledesign.core.model.machining import Machining, compute_machining
 from simpledesign.core.model.part import (
     DIMENSIONS,
     EDITABLE_PROPERTIES,
@@ -21,48 +22,10 @@ from simpledesign.core.model.part import (
     Orientation,
     default_expressions,
 )
+from simpledesign.core.model.state import BoardState
 from simpledesign.core.params.errors import ErrorCode, FormulaError
 from simpledesign.core.params.expression import Node, evaluate, parse, references
 from simpledesign.core.params.graph import topological_order
-
-type Vec3 = tuple[float, float, float]
-
-
-@dataclass(frozen=True, slots=True)
-class BoardState:
-    """Computed values of one board."""
-
-    length: float
-    width: float
-    thickness: float
-    x: float
-    y: float
-    z: float
-    count: int
-    spacing: float
-    orientation: Orientation
-    pattern_axis: Axis
-
-    def extent(self, axis: Axis) -> float:
-        return float(getattr(self, self.orientation.dimension_along(axis)))
-
-    @property
-    def size(self) -> Vec3:
-        """World-axis-aligned size (sx, sy, sz)."""
-        return (self.extent(Axis.X), self.extent(Axis.Y), self.extent(Axis.Z))
-
-    @property
-    def origin(self) -> Vec3:
-        return (self.x, self.y, self.z)
-
-    def instance_origins(self) -> list[Vec3]:
-        """Min corner of every copy of the pattern (first = the board itself)."""
-        origins = []
-        for i in range(self.count):
-            point = [self.x, self.y, self.z]
-            point[self.pattern_axis.position] += i * self.spacing
-            origins.append((point[0], point[1], point[2]))
-        return origins
 
 
 @dataclass(slots=True)
@@ -70,6 +33,7 @@ class Evaluation:
     values: dict[str, float]
     errors: dict[str, FormulaError]
     boards: dict[str, BoardState]
+    machining: Machining
 
     def value(self, owner_id: str, prop: str | None = None) -> float:
         return self.values[node_key(owner_id, prop)]
@@ -167,7 +131,7 @@ class Evaluator:
             board.id: _board_state(board.id, board.orientation, board.pattern_axis, values)
             for board in doc.boards.values()
         }
-        return Evaluation(values, errors, boards)
+        return Evaluation(values, errors, boards, compute_machining(doc, boards))
 
 
 def _board_state(

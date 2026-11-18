@@ -21,6 +21,7 @@ from simpledesign.core.io import sdz
 from simpledesign.core.io.export import ExportError, export
 from simpledesign.ui.cutlist_panel import CutlistPanel
 from simpledesign.ui.cutplan_panel import CutplanPanel
+from simpledesign.ui.joints_panel import JointsPanel
 from simpledesign.ui.materials_dialog import MaterialsDialog
 from simpledesign.ui.parameters_panel import ParametersPanel
 from simpledesign.ui.properties_panel import PropertiesPanel
@@ -75,6 +76,11 @@ class MainWindow(QMainWindow):
         self.cutplan_dock = self._add_dock(
             "cutplan", self.tr("Schnittplan"), self.cutplan_panel, bottom
         )
+        self.joints_panel = JointsPanel(self.controller)
+        self.joints_dock = self._add_dock(
+            "joints", self.tr("Verbindungen"), self.joints_panel, right
+        )
+        self.joints_panel.joint_created.connect(lambda _id: self.joints_dock.show())
         self.tabifyDockWidget(self.parameters_dock, self.cutlist_dock)
         self.tabifyDockWidget(self.cutlist_dock, self.cutplan_dock)
         self.parameters_dock.raise_()
@@ -187,6 +193,9 @@ class MainWindow(QMainWindow):
             [self.action_add_board, self.action_add_group, self.action_add_parameter]
         )
 
+        joint_menu = menu_bar.addMenu(self.tr("&Verbindung"))
+        joint_menu.addActions(list(self.joints_panel.add_actions.values()))
+
         view_menu = menu_bar.addMenu(self.tr("&Ansicht"))
         view_menu.addActions(list(self.view_actions.values()))
         view_menu.addAction(self.action_fit)
@@ -197,6 +206,7 @@ class MainWindow(QMainWindow):
         for dock in (
             self.parts_dock,
             self.properties_dock,
+            self.joints_dock,
             self.parameters_dock,
             self.cutlist_dock,
             self.cutplan_dock,

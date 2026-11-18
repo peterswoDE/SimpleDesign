@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from simpledesign.core.materials.material import Material
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation
+from simpledesign.core.model.machining import local_shape
 from simpledesign.core.model.settings import CutSettings
 
 EPS = 1e-6
@@ -265,9 +266,10 @@ class MaterialPlan:
 def pieces_by_material(doc: Document, evaluation: Evaluation) -> dict[str, list[Piece]]:
     result: dict[str, list[Piece]] = {}
     for board in doc.boards.values():
-        state = evaluation.boards[board.id]
-        piece = Piece(board.name, state.length, state.width, doc.has_grain(board.id))
-        result.setdefault(board.material_id, []).extend([piece] * state.count)
+        for shape in evaluation.machining.parts[board.id]:
+            (length, width, _), _signature = local_shape(shape, board.orientation)
+            piece = Piece(board.name, length, width, doc.has_grain(board.id))
+            result.setdefault(board.material_id, []).append(piece)
     return result
 
 

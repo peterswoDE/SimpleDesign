@@ -5,6 +5,8 @@ from __future__ import annotations
 from PySide6.QtCore import QCoreApplication, QLocale
 
 from simpledesign.core.materials.material import MaterialKind
+from simpledesign.core.model.joint import JointKind
+from simpledesign.core.model.machining import Hardware, JointErrorCode
 from simpledesign.core.model.part import Axis, Orientation
 from simpledesign.core.params.errors import ErrorCode, FormulaError
 from simpledesign.core.params.expression import format_number
@@ -89,3 +91,56 @@ def percent(value: float) -> str:
 
 def money(value: float) -> str:
     return QLocale().toString(value, "f", 2) + " €"
+
+
+def joint_kind_label(kind: JointKind) -> str:
+    labels = {
+        JointKind.DOWEL: _tr("Dübel"),
+        JointKind.SCREW: _tr("Schrauben"),
+        JointKind.GROOVE: _tr("Nut"),
+        JointKind.RABBET: _tr("Falz"),
+    }
+    return labels[kind]
+
+
+def joint_param_label(name: str) -> str:
+    labels = {
+        "diameter": _tr("Durchmesser"),
+        "length": _tr("Länge"),
+        "depth_main": _tr("Bohrtiefe Hauptteil"),
+        "edge_distance": _tr("Randabstand"),
+        "max_spacing": _tr("Max. Abstand"),
+        "count": _tr("Anzahl (0 = automatisch)"),
+        "depth": _tr("Tiefe"),
+        "play": _tr("Spiel"),
+    }
+    return labels[name]
+
+
+def joint_error_message(code: JointErrorCode) -> str:
+    messages = {
+        JointErrorCode.NO_CONTACT: _tr("Die Teile berühren sich nicht."),
+        JointErrorCode.FACE_CONTACT: _tr(
+            "Das Anschlussteil liegt mit der Fläche an, es braucht eine Kante "
+            "(Hauptteil und Anschlussteil tauschen?)."
+        ),
+        JointErrorCode.TOO_DEEP: _tr("Zu tief für die Materialstärke."),
+        JointErrorCode.SCREW_TOO_SHORT: _tr("Die Schraube ist zu kurz."),
+        JointErrorCode.INVALID_VALUE: _tr("Ein Wert ist ungültig."),
+    }
+    return messages[code]
+
+
+def machining_text(holes: int, cutouts: int) -> str:
+    parts = []
+    if holes:
+        parts.append(_tr("{n} Bohrungen").format(n=holes) if holes > 1 else _tr("1 Bohrung"))
+    if cutouts:
+        parts.append(_tr("{n} Nuten/Fälze").format(n=cutouts) if cutouts > 1 else _tr("1 Nut/Falz"))
+    return ", ".join(parts)
+
+
+def hardware_label(item: Hardware) -> str:
+    return _tr("{kind} {d} × {l} mm").format(
+        kind=joint_kind_label(item.kind), d=number(item.diameter), l=number(item.length)
+    )

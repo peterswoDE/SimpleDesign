@@ -25,7 +25,8 @@ from vtkmodules.vtkRenderingCore import (
 
 from simpledesign.app.controller import Controller
 from simpledesign.app.snapping import SnapTarget, Vec3, axis_parameter, best_snap, snap_targets
-from simpledesign.core.geometry.mesh import box_mesh
+from simpledesign.core.geometry.mesh import part_mesh
+from simpledesign.core.model.machining import PartShape
 from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import add_offset
 from simpledesign.ui.texts import number
@@ -84,7 +85,7 @@ class Scene(QObject):
 
         self._board_actors: dict[str, list[tuple[vtkActor, vtkActor]]] = {}
         self._actor_board: dict[int, str] = {}  # id(actor) -> board id
-        self._meshes: dict[Size, tuple[vtkPolyDataMapper, vtkPolyDataMapper]] = {}
+        self._meshes: dict[object, tuple[vtkPolyDataMapper, vtkPolyDataMapper]] = {}
         # Software picking: works in every OpenGL context (no hardware selector).
         self._picker = vtkCellPicker()
         self._picker.SetTolerance(0.002)
@@ -98,14 +99,23 @@ class Scene(QObject):
         self.rebuild()
 
     # ================================================================== boards
-    def _mappers(self, size: Size) -> tuple[vtkPolyDataMapper, vtkPolyDataMapper]:
-        key = (round(size[0], 3), round(size[1], 3), round(size[2], 3))
+    def _mappers(self, shape: PartShape) -> tuple[vtkPolyDataMapper, vtkPolyDataMapper]:
+        size = (round(shape.size[0], 3), round(shape.size[1], 3), round(shape.size[2], 3))
+        key = (size, shape.features)
         if key not in self._meshes:
-            mesh = box_mesh(key)
+            mesh = part_mesh(size, shape.features)
+            faces = pv.PolyData(mesh.points, mesh.faces)
             face_mapper = vtkPolyDataMapper()
-            face_mapper.SetInputData(pv.PolyData(mesh.points, mesh.faces))
+            face_mapper.SetInputData(faces)
             edge_mapper = vtkPolyDataMapper()
-            edge_mapper.SetInputData(_edges(key))
+            if shape.features:
+                # Sharp edges of the machined body (box edges, hole rims, grooves).
+                edges = faces.clean().extract_feature_edges(
+                    feature_angle=30, boundary_edges=False, manifold_edges=False
+                )
+                edge_mapper.SetInputData(edges)
+            else:
+                edge_mapper.SetInputData(_edges(size))
             self._meshes[key] = (face_mapper, edge_mapper)
         return self._meshes[key]
 
@@ -131,12 +141,12 @@ class Scene(QObject):
         for board in doc.boards.values():
             if not doc.is_visible(board):
                 continue
-            state = evaluation.boards[board.id]
-            face_mapper, edge_mapper = self._mappers(state.size)
             is_selected = board.id in selected
             color = SELECTION_COLOR if is_selected else doc.materials[board.material_id].color
             pairs = []
-            for origin in state.instance_origins():
+            for shape in evaluation.machining.parts[board.id]:
+                face_mapper, edge_mapper = self._mappers(shape)
+                origin = shape.origin
                 face = vtkActor()
                 face.SetMapper(face_mapper)
                 face.SetPosition(*origin)
@@ -315,11 +325,11 @@ class Scene(QObject):
         return True
 
     def _preview(self, drag: _Drag) -> None:
-        state = self.controller.evaluation.boards[drag.board_id]
-        for (face, edge), origin in zip(
-            self._board_actors.get(drag.board_id, []), state.instance_origins(), strict=False
+        shapes = self.controller.evaluation.machining.parts[drag.board_id]
+        for (face, edge), shape in zip(
+            self._board_actors.get(drag.board_id, []), shapes, strict=False
         ):
-            moved = list(origin)
+            moved = list(shape.origin)
             moved[drag.axis.position] += drag.delta
             face.SetPosition(*moved)
             edge.SetPosition(*moved)
