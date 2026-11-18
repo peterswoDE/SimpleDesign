@@ -6,7 +6,7 @@ from functools import partial
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence
+from PySide6.QtGui import QAction, QBrush, QColor, QDropEvent, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -26,7 +26,47 @@ if TYPE_CHECKING:
 from simpledesign.ui.texts import error_message
 
 ID_ROLE = Qt.ItemDataRole.UserRole
+GROUP_ROLE = Qt.ItemDataRole.UserRole + 1
 HIDDEN_COLOR = QColor("#9aa5b1")
+
+
+DropPosition = QAbstractItemView.DropIndicatorPosition
+
+
+class PartsTree(QTreeWidget):
+    """Tree with drag and drop for regrouping. The tree itself is never
+    changed by a drop: ``dropped`` asks the controller, the rebuild follows."""
+
+    dropped = Signal(list, object)  # (ids, target group id or None)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def drop_target(self, item: QTreeWidgetItem | None, position: DropPosition) -> str | None:
+        """The group a drop on ``item`` at ``position`` goes into (None = top level)."""
+        if item is None or position == DropPosition.OnViewport:
+            return None
+        if position == DropPosition.OnItem and item.data(0, GROUP_ROLE):
+            return str(item.data(0, ID_ROLE))
+        parent = item.parent()
+        return None if parent is None else str(parent.data(0, ID_ROLE))
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if event.source() is not self:
+            event.ignore()
+            return
+        item = self.itemAt(event.position().toPoint())
+        target = self.drop_target(item, self.dropIndicatorPosition())
+        ids = [str(i.data(0, ID_ROLE)) for i in self.selectedItems()]
+        event.setDropAction(Qt.DropAction.IgnoreAction)
+        event.accept()
+        if ids:
+            self.dropped.emit(ids, target)
 
 
 class TreePanel(QWidget):
@@ -39,7 +79,8 @@ class TreePanel(QWidget):
         self._updating = False
         self._items: dict[str, QTreeWidgetItem] = {}
 
-        self.tree = QTreeWidget()
+        self.tree = PartsTree()
+        self.tree.dropped.connect(self.move_ids)
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setEditTriggers(QAbstractItemView.EditTrigger.EditKeyPressed)
@@ -131,7 +172,13 @@ class TreePanel(QWidget):
         def make(obj_id: str, name: str, visible: bool, is_group: bool) -> QTreeWidgetItem:
             item = QTreeWidgetItem([name])
             item.setData(0, ID_ROLE, obj_id)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            item.setData(0, GROUP_ROLE, is_group)
+            flags = item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled
+            if is_group:
+                flags |= Qt.ItemFlag.ItemIsDropEnabled
+            else:
+                flags &= ~Qt.ItemFlag.ItemIsDropEnabled
+            item.setFlags(flags)
             if not visible:
                 item.setForeground(0, QBrush(HIDDEN_COLOR))
             if is_group:
@@ -263,8 +310,19 @@ class TreePanel(QWidget):
         self.controller.add_group(parent, ids)
 
     def _move_to(self, group_id: str | None) -> None:
+        self.move_ids(self.selected_ids(), group_id)
+
+    def move_ids(self, ids: list[str], group_id: str | None) -> None:
+        doc = self.controller.doc
+        current = {
+            doc.boards[i].group_id if i in doc.boards else doc.groups[i].parent_id
+            for i in ids
+            if i in doc.boards or i in doc.groups
+        }
+        if current == {group_id}:
+            return  # dropped where it already is
         try:
-            self.controller.move_to_group(self.selected_ids(), group_id)
+            self.controller.move_to_group(ids, group_id)
         except ValueError:
             QMessageBox.warning(
                 self,

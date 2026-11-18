@@ -95,3 +95,29 @@ def test_drop_places_furniture_on_the_floor_under_the_cursor(window: MainWindow)
     )
     assert lefts[1] - lefts[0] > 50  # dropped further right → placed further right
     assert all(ctrl.evaluation.boards[b].z >= -1e-6 for b in ctrl.doc.boards)
+
+
+def test_tree_drag_and_drop_regroups(window: MainWindow) -> None:
+    from simpledesign.ui.tree_panel import DropPosition
+
+    ctrl = window.controller
+    first = ctrl.add_board()
+    second = ctrl.add_board()
+    group = ctrl.add_group(None, [first])
+    panel = window.tree_panel
+    tree = panel.tree
+    group_item = panel._items[group]
+    board_item = panel._items[first]
+    assert tree.drop_target(group_item, DropPosition.OnItem) == group
+    assert tree.drop_target(board_item, DropPosition.OnItem) == group
+    assert tree.drop_target(group_item, DropPosition.BelowItem) is None
+    assert tree.drop_target(None, DropPosition.OnViewport) is None
+
+    count = ctrl.undo_stack.count()
+    tree.dropped.emit([second], group)
+    assert ctrl.doc.boards[second].group_id == group
+    assert ctrl.undo_stack.count() == count + 1
+    tree.dropped.emit([second], group)  # same place: nothing happens
+    assert ctrl.undo_stack.count() == count + 1
+    tree.dropped.emit([first, second], None)
+    assert ctrl.doc.boards[first].group_id is None
