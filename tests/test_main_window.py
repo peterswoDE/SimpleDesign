@@ -10,16 +10,19 @@ from simpledesign.ui.main_window import MainWindow
 
 @pytest.fixture
 def window(qtbot: QtBot) -> Iterator[MainWindow]:
+    # Not qtbot.addWidget(): pytest-qt would close the window *before* this
+    # fixture's teardown, i.e. with unsaved changes -> "save changes?" dialog.
     win = MainWindow()
-    qtbot.addWidget(win)
     win.show()
     qtbot.waitExposed(win)
     yield win
+    win.controller.undo_stack.setClean()
     win.close()
+    win.deleteLater()
 
 
 def test_window_has_german_title_and_docks(window: MainWindow) -> None:
-    assert window.windowTitle() == "SimpleDesign"
+    assert window.windowTitle() == "Unbenannt[*] - SimpleDesign"
     assert window.parts_dock.windowTitle() == "Bauteile"
     assert window.properties_dock.windowTitle() == "Eigenschaften"
     assert window.parameters_dock.windowTitle() == "Parameter"
@@ -58,3 +61,49 @@ def test_mouse_wheel_zooms_towards_scene(window: MainWindow) -> None:
     before = camera.GetDistance()
     window.viewport.interaction_style.zoom_to_cursor(1.15)
     assert camera.GetDistance() == pytest.approx(before / 1.15)
+
+
+def test_add_board_appears_everywhere(window: MainWindow) -> None:
+    window.action_add_board.trigger()
+    (new_id,) = window.controller.doc.boards
+    assert window.controller.selection == [new_id]
+    assert window.tree_panel.tree.topLevelItemCount() == 1
+    assert window.properties_panel.stack.currentWidget() is window.properties_panel.board_page
+    assert window.cutlist_panel.table.rowCount() == 1
+    assert window.scene.gizmo_board() == new_id
+    assert window.windowTitle().startswith("Unbenannt")
+    assert window.isWindowModified()
+    assert window.action_undo.isEnabled()
+
+
+def test_properties_field_sets_formula(window: MainWindow) -> None:
+    window.action_add_board.trigger()
+    (new_id,) = window.controller.doc.boards
+    field = window.properties_panel.fields["length"]
+    field.edit.setText("2 * 400")
+    field.edit.setModified(True)
+    field.edit.editingFinished.emit()
+    assert window.controller.evaluation.boards[new_id].length == 800
+    assert field.value_label.text() == "= 800"
+
+
+def test_properties_field_shows_input_error(window: MainWindow) -> None:
+    window.action_add_board.trigger()
+    field = window.properties_panel.fields["length"]
+    field.edit.setText("Unbekannt + 1")
+    field.edit.setModified(True)
+    field.edit.editingFinished.emit()
+    assert "Unbekannt" in field.edit.toolTip()
+    assert window.controller.undo_stack.count() == 1
+
+
+def test_click_selects_board(window: MainWindow) -> None:
+    window.action_add_board.trigger()
+    (new_id,) = window.controller.doc.boards
+    window.controller.set_selection([])
+    window.viewport.fit_view()
+    width, height = window.viewport.renderer.GetSize()
+    scene = window.scene
+    scene.press(width // 2, height // 2, False)
+    scene.release(width // 2, height // 2, False)
+    assert window.controller.selection == [new_id]

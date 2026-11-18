@@ -34,7 +34,7 @@ Geprüft am 18.11.2026 auf PyPI (alle Pakete aktiv gepflegt, letzte Releases Aug
 | 3D-Ansicht | **pyvista + pyvistaqt** (VTK) | Picking, Kamera, in Qt einbettbar |
 | Geometrie-Kern | **build123d** (OpenCascade/OCP) | Volumenkörper, Boolesche Operationen, STEP/STL, Projektionen für Zeichnungen |
 | Skizzen-Solver | **`slvs`** (offizielle SolveSpace-Python-Bindings) | Gepflegt, Pakete für 3.12–3.14. *Nicht* `python-solvespace` – das hat Windows-Pakete nur bis Python 3.11 |
-| Formeln | eigener sicherer Ausdrucks-Parser (Python-`ast`, Whitelist) | Kein `eval`, gute Fehlermeldungen |
+| Formeln | eigener sicherer Ausdrucks-Parser (eigener Tokenizer + rekursiver Abstieg) | Kein `eval`, gute Fehlermeldungen mit Position |
 | Zuschnitt 2D | eigener Guillotine-Algorithmus (Referenz: `rectpack`) | `rectpack` ist seit Jahren ungepflegt; Guillotine-Schnitte + Faserrichtung + Sägeblattbreite brauchen ohnehin eigene Logik |
 | Zuschnitt 1D | eigener First-Fit-Decreasing | Stangenware (Bauholz, Latten) |
 | Zeichnung | OCC-HLR-Projektion → **ezdxf** (DXF) + PDF via Qt `QPdfWriter` | |
@@ -146,6 +146,8 @@ docs/
 
 ### Ein einziger Geometrie-Pfad
 Alle Teile werden von Anfang an über build123d erzeugt – **kein separater „schneller Quader-Pfad“**, der später mit OCC-Teilen auseinanderlaufen würde. Ein Quader ohne Bearbeitung ist auch in OCC schnell; teuer sind nur Boolesche Operationen, und die werden pro Teil gecacht.
+
+> **Stand Phase 1:** Quader werden direkt mit OCP (`BRepPrimAPI_MakeBox`) erzeugt und tesselliert – das ist derselbe OpenCascade-Kern, aber ohne die ~6 s Importzeit von build123d (OCP allein ~0,6 s, im Hintergrund vorgeladen). build123d kommt dazu, sobald 3D-Export (Phase 2) bzw. Holzverbindungen mit Booleschen Operationen (Phase 3) es brauchen.
 Ziel: < 100 ms Neuberechnung bei ~50 Teilen. Wird in Phase 0 gemessen; reicht es nicht, wird die Neuberechnung in einen Hintergrund-Thread verlegt (UI zeigt kurz alte Geometrie).
 
 ### Internationalisierung (vorbereitet)

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from simpledesign import __version__
+from simpledesign.core.geometry import mesh
+from simpledesign.core.io import sdz
 from simpledesign.ui.i18n import SOURCE_LANGUAGE, install_translators
 from simpledesign.ui.main_window import MainWindow
 
@@ -26,8 +29,14 @@ def configure_application(app: QApplication) -> None:
 
 
 def run(argv: Sequence[str] | None = None) -> int:
-    app = QApplication(list(argv) if argv is not None else sys.argv)
+    mesh.preload()  # import the geometry kernel while the window opens
+    args = list(argv) if argv is not None else sys.argv
+    app = QApplication(args)
     configure_application(app)
     window = MainWindow()
     window.show()
+    window.offer_recovery()
+    files = [Path(a) for a in args[1:] if a.lower().endswith(sdz.FILE_SUFFIX)]
+    if files:
+        window.open_path(files[0])
     return app.exec()

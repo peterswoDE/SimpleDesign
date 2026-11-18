@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 import pyvista as pv
 from PySide6.QtWidgets import QWidget
@@ -27,13 +27,25 @@ _STATE_ROTATE = 1
 _STATE_PAN = 2
 
 
+class PointerHandler(Protocol):
+    """Receives left-button events (selection, gizmo drag) from the style."""
+
+    def press(self, x: int, y: int, ctrl: bool) -> None: ...
+
+    def move(self, x: int, y: int) -> bool:
+        """Return True if the move was consumed (e.g. a drag is running)."""
+        ...
+
+    def release(self, x: int, y: int, ctrl: bool) -> None: ...
+
+
 class FusionInteractorStyle(vtkInteractorStyleTrackballCamera):
     """Mouse mapping like Fusion 360.
 
     * middle button drag         → pan
     * Shift + middle button drag → orbit
     * mouse wheel                → zoom towards the point under the cursor
-    * left button                → reserved for selection (phase 1)
+    * left button                → forwarded to ``pointer_handler`` (select, drag)
     * right button               → reserved for context menus
 
     Observers registered on the style *replace* VTK's default handlers.
@@ -42,13 +54,15 @@ class FusionInteractorStyle(vtkInteractorStyleTrackballCamera):
     def __init__(self) -> None:
         super().__init__()
         self._picker = vtkPropPicker()
+        self.pointer_handler: PointerHandler | None = None
+        self.AddObserver(vtkCommand.LeftButtonPressEvent, self._on_left_press)
+        self.AddObserver(vtkCommand.LeftButtonReleaseEvent, self._on_left_release)
+        self.AddObserver(vtkCommand.MouseMoveEvent, self._on_mouse_move)
         self.AddObserver(vtkCommand.MiddleButtonPressEvent, self._on_middle_press)
         self.AddObserver(vtkCommand.MiddleButtonReleaseEvent, self._on_middle_release)
         self.AddObserver(vtkCommand.MouseWheelForwardEvent, self._on_wheel_forward)
         self.AddObserver(vtkCommand.MouseWheelBackwardEvent, self._on_wheel_backward)
         for event in (
-            vtkCommand.LeftButtonPressEvent,
-            vtkCommand.LeftButtonReleaseEvent,
             vtkCommand.RightButtonPressEvent,
             vtkCommand.RightButtonReleaseEvent,
             # VTK's built-in key bindings ("q"/"e" quit, "w" wireframe, …) must not fire.
@@ -59,6 +73,25 @@ class FusionInteractorStyle(vtkInteractorStyleTrackballCamera):
     # ------------------------------------------------------------------ buttons
     def _ignore(self, _obj: Any, _event: str) -> None:
         return
+
+    def _event(self) -> tuple[int, int, bool]:
+        interactor = self.GetInteractor()
+        x, y = interactor.GetEventPosition()
+        return x, y, bool(interactor.GetControlKey())
+
+    def _on_left_press(self, _obj: Any, _event: str) -> None:
+        if self.pointer_handler is not None:
+            self.pointer_handler.press(*self._event())
+
+    def _on_left_release(self, _obj: Any, _event: str) -> None:
+        if self.pointer_handler is not None:
+            self.pointer_handler.release(*self._event())
+
+    def _on_mouse_move(self, _obj: Any, _event: str) -> None:
+        x, y, _ctrl = self._event()
+        if self.pointer_handler is not None and self.pointer_handler.move(x, y):
+            return
+        self.OnMouseMove()  # default: continue pan / orbit
 
     def _poke(self) -> bool:
         x, y = self.GetInteractor().GetEventPosition()
