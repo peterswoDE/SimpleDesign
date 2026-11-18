@@ -23,6 +23,7 @@ from simpledesign.core.model.document import Document
 from simpledesign.core.model.joint import JOINT_DEFAULTS, Joint, JointKind
 from simpledesign.core.model.part import Orientation
 from simpledesign.core.model.state import BoardState, Vec3
+from simpledesign.core.sketch.profile import Region
 
 TOLERANCE = 0.01  # mm: faces closer than this touch
 _ROUND = 2  # decimals for comparing machining of different parts
@@ -66,7 +67,34 @@ class Prism:
     length: float
 
 
-type Feature = Hole | Cutout | Prism
+@dataclass(frozen=True, slots=True)
+class Extrusion:
+    """Sketch regions extruded along an axis.
+
+    A plane point ``(u, v)`` lies at ``origin + u * e[axes[0]] + v * e[axes[1]]``;
+    the extrusion runs ``length`` along +``axes[2]``. ``cut=False`` is the
+    outline of a profile part (replaces the box), ``cut=True`` removes material.
+    """
+
+    regions: tuple[Region, ...]
+    axes: tuple[int, int, int]
+    origin: Vec3
+    length: float
+    cut: bool = True
+
+
+type Feature = Hole | Cutout | Prism | Extrusion
+
+
+@dataclass(frozen=True, slots=True)
+class SketchFeature:
+    """Input for :func:`compute_machining`: a solved sketch of a board."""
+
+    regions: tuple[Region, ...]
+    cut: bool = True
+    # Cuts: from the top (thickness side) or bottom face, depth; None = through.
+    top: bool = True
+    depth: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +180,10 @@ def _relative(feature: Feature, origin: list[float]) -> Feature:
     if isinstance(feature, Prism):
         points = tuple(shift(p) for p in feature.points)
         return Prism(points, feature.axis, feature.length)
+    if isinstance(feature, Extrusion):
+        return Extrusion(
+            feature.regions, feature.axes, shift(feature.origin), feature.length, feature.cut
+        )
     return Cutout(shift(feature.lo), shift(feature.hi))
 
 
@@ -465,7 +497,26 @@ def _apply(op: _Op) -> None:
         instance.features.append(what)
 
 
-def compute_machining(doc: Document, boards: Mapping[str, BoardState]) -> Machining:
+def _sketch_feature(state: BoardState, origin: Vec3, sketch: SketchFeature) -> Feature:
+    o = state.orientation
+    axes = (o.length_axis.position, o.width_axis.position, o.thickness_axis.position)
+    start = list(origin)
+    if not sketch.cut:
+        return Extrusion(sketch.regions, axes, origin, state.thickness, cut=False)
+    if sketch.depth is None or sketch.depth >= state.thickness:
+        length = state.thickness
+    else:
+        length = sketch.depth
+        if sketch.top:
+            start[axes[2]] += state.thickness - length
+    return Extrusion(sketch.regions, axes, _vec(start), length, cut=True)
+
+
+def compute_machining(
+    doc: Document,
+    boards: Mapping[str, BoardState],
+    sketches: Mapping[str, list[SketchFeature]] | None = None,
+) -> Machining:
     instances = {
         board_id: [
             _Instance(list(origin), [origin[i] + state.size[i] for i in range(3)])
@@ -473,6 +524,15 @@ def compute_machining(doc: Document, boards: Mapping[str, BoardState]) -> Machin
         ]
         for board_id, state in boards.items()
     }
+    for board_id, features in (sketches or {}).items():
+        if board_id not in boards:
+            continue
+        for instance in instances[board_id]:
+            for sketch in features:
+                instance.features.append(
+                    _sketch_feature(boards[board_id], _vec(instance.lo), sketch)
+                )
+                instance.cut_operations += sketch.cut
     result = Machining()
     fittings: dict[tuple[JointKind, float, float], int] = {}
     for joint in doc.joints.values():
@@ -536,6 +596,9 @@ def local_shape(shape: PartShape, orientation: Orientation) -> tuple[Vec3, Signa
         elif isinstance(f, Prism):
             points = tuple(sorted(local(p) for p in f.points))
             items.append(("prism", perm.index(f.axis), points, round(f.length, _ROUND)))
+        elif isinstance(f, Extrusion):
+            # Sketch coordinates are already in the board's own frame.
+            items.append(("extrusion", f.regions, local(f.origin), round(f.length, _ROUND), f.cut))
         else:
             items.append(("cutout", local(f.lo), local(f.hi)))
     return local(shape.size), tuple(sorted(items, key=repr))

@@ -16,6 +16,14 @@ def _tr(text: str) -> str:
     return QCoreApplication.translate("Texts", text)
 
 
+def profile_problem(problem: str) -> str:
+    return {
+        "empty": _tr("keine Geometrie"),
+        "open": _tr("Kontur offen"),
+        "branched": _tr("Linien verzweigen sich"),
+    }.get(problem, problem)
+
+
 def error_message(error: FormulaError) -> str:
     p = error.params
     messages = {
@@ -37,7 +45,13 @@ def error_message(error: FormulaError) -> str:
             "Ungültiger Name „{name}“: nur Buchstaben, Ziffern und _, nicht mit Ziffer beginnen."
         ),
         ErrorCode.DUPLICATE_NAME: _tr("Der Name „{name}“ ist schon vergeben."),
+        ErrorCode.SKETCH_UNSOLVABLE: _tr(
+            "Die Skizze ist widersprüchlich – Bedingungen passen nicht zusammen."
+        ),
+        ErrorCode.PROFILE_INVALID: _tr("Die Skizze ergibt keine geschlossene Kontur ({problem})."),
     }
+    if error.code == ErrorCode.PROFILE_INVALID:
+        p = {"problem": profile_problem(str(p.get("problem", "")))}
     values = {key: number(v) if isinstance(v, float) else v for key, v in p.items()}
     try:
         return messages[error.code].format(**values)

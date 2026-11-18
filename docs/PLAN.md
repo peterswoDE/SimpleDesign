@@ -251,6 +251,8 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 - Extrudieren als neues Teil (mit Material + Faserrichtung) oder als Ausschnitt aus bestehendem Teil (deckt auch Taschen/Fräsungen ab, die in Phase 3 offen blieben).
 - Extrusionsteile in der Zuschnittliste mit **Hüllmaß** in ihrem lokalen System (Rohmaß zum Aussägen).
 
+> **Stand Phase 5 (umgesetzt):** Eigener numpy-Solver (Newton/Levenberg-Marquardt, Freiheitsgrade über den Rang der Jacobi-Matrix, widersprüchliche Bedingungen werden markiert). Skizzen liegen am Brett: als **Kontur** (das Brett wird zum Extrusionsteil; Länge/Breite = Hüllmaß der Kontur, in der Zuschnittliste das Rohmaß) oder als **Ausschnitt** auf Ober-/Unterseite (Tasche mit Tiefe als Formel oder durchgehend, Bezugskanten des Bretts sind fangbar). Maße sind Formeln (`d.<id>` bzw. `depth.<id>` im Brett), Parameter steuern weiter. Skizzeneditor: Linie (Kette), Rechteck, Kreis, Bogen, Hilfsgeometrie, Ziehen, Rahmenauswahl, Bemaßen (D), H/V-Maß, Winkel, horizontal/vertikal/parallel/senkrecht/tangential/deckungsgleich/gleich/fixieren, eigenes Rückgängig; OK nur bei geschlossener, lösbarer Kontur. Einstieg: „Einfügen → Skizzenteil…“ und Abschnitt „Skizze“ in den Eigenschaften. Dateiformat Version 4. Splines folgen später.
+
 ### Phase 6 – Technische Zeichnung
 - Ansichten (vorne, seitlich, oben, iso) per HLR-Projektion.
 - Automatische Gesamt- und Teilbemaßung, manuelle Bemaßung ergänzbar.

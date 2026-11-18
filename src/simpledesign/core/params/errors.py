@@ -24,6 +24,8 @@ class ErrorCode(StrEnum):
     NOT_INTEGER = "not_integer"
     INVALID_NAME = "invalid_name"
     DUPLICATE_NAME = "duplicate_name"
+    SKETCH_UNSOLVABLE = "sketch_unsolvable"  # contradicting sketch constraints
+    PROFILE_INVALID = "profile_invalid"  # param problem: empty / open / branched
 
 
 class FormulaError(Exception):

@@ -22,10 +22,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from simpledesign.core.model.machining import Feature, Hole, Prism
+from simpledesign.core.model.machining import Extrusion, Feature, Hole, Prism
+from simpledesign.core.sketch.profile import Loop, Region
 
 if TYPE_CHECKING:
-    from OCP.TopoDS import TopoDS_Shape
+    from collections.abc import Callable
+
+    from OCP.TopoDS import TopoDS_Shape, TopoDS_Wire
 
 type Size = tuple[float, float, float]
 
@@ -72,11 +75,13 @@ def make_shape(size: Size, features: tuple[Feature, ...] = ()) -> TopoDS_Shape:
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
     from OCP.collections import List_TopoDS_Shape
 
-    shape = BRepPrimAPI_MakeBox(*size).Shape()
-    if not features:
+    outlines = [f for f in features if isinstance(f, Extrusion) and not f.cut]
+    cuts = [f for f in features if not (isinstance(f, Extrusion) and not f.cut)]
+    shape = _extrusion(outlines[0], 0.0) if outlines else BRepPrimAPI_MakeBox(*size).Shape()
+    if not cuts:
         return shape
     tools = List_TopoDS_Shape()
-    for feature in features:
+    for feature in cuts:
         tools.Append(_tool(size, feature))
     arguments = List_TopoDS_Shape()
     arguments.Append(shape)
@@ -104,6 +109,11 @@ def _tool(size: Size, feature: Feature) -> TopoDS_Shape:
         ).Shape()
     if isinstance(feature, Prism):
         return _prism_tool(size, feature)
+    if isinstance(feature, Extrusion):
+        n = feature.axes[2]
+        below = _OVERCUT if feature.origin[n] <= 1e-6 else 0.0
+        above = _OVERCUT if feature.origin[n] + feature.length >= size[n] - 1e-6 else 0.0
+        return _extrusion(feature, below, above)
     lo, hi = list(feature.lo), list(feature.hi)
     for i in range(3):
         # Open where the cut-out reaches the part surface.
@@ -152,6 +162,67 @@ def _prism_tool(size: Size, prism: Prism) -> TopoDS_Shape:
     sweep = [0.0, 0.0, 0.0]
     sweep[a] = length
     return BRepPrimAPI_MakePrism(face, gp_Vec(*sweep)).Shape()
+
+
+def _extrusion(feature: Extrusion, below: float, above: float = 0.0) -> TopoDS_Shape:
+    """Solid of the extruded regions, ``below``/``above`` longer at the ends."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+
+    u, v, n = feature.axes
+
+    def place(p: tuple[float, float]) -> tuple[float, float, float]:
+        q = list(feature.origin)
+        q[u] += p[0]
+        q[v] += p[1]
+        q[n] -= below
+        return (q[0], q[1], q[2])
+
+    sweep = [0.0, 0.0, 0.0]
+    sweep[n] = feature.length + below + above
+    solid: TopoDS_Shape | None = None
+    for region in feature.regions:
+        prism = BRepPrimAPI_MakePrism(_face(region, place), gp_Vec(*sweep)).Shape()
+        solid = prism if solid is None else BRepAlgoAPI_Fuse(solid, prism).Shape()
+    assert solid is not None
+    return solid
+
+
+def _face(
+    region: Region, place: Callable[[tuple[float, float]], tuple[float, float, float]]
+) -> TopoDS_Shape:
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.ShapeFix import ShapeFix_Face
+    from OCP.TopoDS import TopoDS
+
+    maker = BRepBuilderAPI_MakeFace(_wire(region.outer, place))
+    for hole in region.holes:
+        wire = _wire(hole, place)
+        maker.Add(TopoDS.Wire(wire.Reversed()))
+    fix = ShapeFix_Face(maker.Face())
+    fix.FixOrientation()
+    fix.Perform()
+    return fix.Face()
+
+
+def _wire(
+    loop: Loop, place: Callable[[tuple[float, float]], tuple[float, float, float]]
+) -> TopoDS_Wire:
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Pnt
+
+    wire = BRepBuilderAPI_MakeWire()
+    for segment in loop:
+        points = [gp_Pnt(*place(p)) for p in segment]
+        if len(points) == 2:
+            edge = BRepBuilderAPI_MakeEdge(points[0], points[1]).Edge()
+        else:
+            arc = GC_MakeArcOfCircle(points[0], points[1], points[2]).Value()
+            edge = BRepBuilderAPI_MakeEdge(arc).Edge()
+        wire.Add(edge)
+    return wire.Wire()
 
 
 @lru_cache(maxsize=512)

@@ -8,8 +8,11 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -20,6 +23,7 @@ from PySide6.QtWidgets import (
 from simpledesign.app.controller import Controller
 from simpledesign.core.model.part import DIMENSIONS, PATTERN, POSITION, Axis, Orientation
 from simpledesign.core.params.errors import FormulaError
+from simpledesign.ui import sketch_editor
 from simpledesign.ui.expression_field import ExpressionField
 from simpledesign.ui.texts import axis_label, error_message, orientation_label, property_label
 
@@ -83,6 +87,7 @@ class PropertiesPanel(QScrollArea):
         self.orientation_combo.activated.connect(self._on_orientation)
         form.addRow(self.tr("Lage"), self.orientation_combo)
         layout.addWidget(general)
+        layout.addWidget(self._build_sketch_box())
 
         self.fields: dict[str, ExpressionField] = {}
         for title, props in (
@@ -107,6 +112,37 @@ class PropertiesPanel(QScrollArea):
         layout.addStretch(1)
         self.board_page = page
         self.stack.addWidget(page)
+
+    def _build_sketch_box(self) -> QGroupBox:
+        box = QGroupBox(self.tr("Skizze"))
+        box_layout = QVBoxLayout(box)
+        row = QHBoxLayout()
+        self.profile_button = QPushButton()
+        self.profile_button.clicked.connect(self.edit_profile)
+        self.remove_profile_button = QPushButton(self.tr("Entfernen"))
+        self.remove_profile_button.setToolTip(
+            self.tr("Kontur entfernen – das Teil wird wieder ein Rechteck")
+        )
+        self.remove_profile_button.clicked.connect(self._remove_profile)
+        row.addWidget(self.profile_button, 1)
+        row.addWidget(self.remove_profile_button)
+        box_layout.addLayout(row)
+        self.cut_list = QListWidget()
+        self.cut_list.setMaximumHeight(90)
+        self.cut_list.itemDoubleClicked.connect(lambda _item: self.edit_cut())
+        box_layout.addWidget(self.cut_list)
+        cut_row = QHBoxLayout()
+        self.add_cut_button = QPushButton(self.tr("Ausschnitt hinzufügen…"))
+        self.add_cut_button.clicked.connect(lambda: self.add_cut())
+        self.edit_cut_button = QPushButton(self.tr("Bearbeiten…"))
+        self.edit_cut_button.clicked.connect(lambda: self.edit_cut())
+        self.delete_cut_button = QPushButton(self.tr("Löschen"))
+        self.delete_cut_button.clicked.connect(self._delete_cut)
+        for button in (self.add_cut_button, self.edit_cut_button, self.delete_cut_button):
+            cut_row.addWidget(button)
+        box_layout.addLayout(cut_row)
+        self.cut_list.currentRowChanged.connect(self._update_cut_buttons)
+        return box
 
     def _build_group_page(self) -> None:
         page = QWidget()
@@ -145,7 +181,24 @@ class PropertiesPanel(QScrollArea):
                 self.orientation_combo.setCurrentIndex(index)
                 axis_index = self.pattern_axis_combo.findData(board.pattern_axis.value)
                 self.pattern_axis_combo.setCurrentIndex(axis_index)
+                sketched = board.profile is not None
+                self.profile_button.setText(
+                    self.tr("Kontur bearbeiten…") if sketched else self.tr("Kontur skizzieren…")
+                )
+                self.remove_profile_button.setVisible(sketched)
+                self.cut_list.clear()
+                for number, cut in enumerate(board.cuts, start=1):
+                    item = QListWidgetItem(self.tr("Ausschnitt {n}").format(n=number))
+                    item.setData(Qt.ItemDataRole.UserRole, cut.id)
+                    self.cut_list.addItem(item)
+                self.cut_list.setVisible(bool(board.cuts))
+                self._update_cut_buttons()
                 for prop, field in self.fields.items():
+                    from_sketch = sketched and prop in ("length", "width")
+                    field.edit.setReadOnly(from_sketch)
+                    field.edit.setToolTip(
+                        self.tr("Wird von der Kontur bestimmt") if from_sketch else ""
+                    )
                     error = evaluation.error(board.id, prop)
                     field.set_state(
                         doc.display_expression(board.id, prop),
@@ -229,3 +282,41 @@ class PropertiesPanel(QScrollArea):
         if (board_id := self._single()) is not None:
             value = str(self.pattern_axis_combo.itemData(index))
             self.controller.set_pattern_axis(board_id, Axis(value))
+
+    # ------------------------------------------------------------------ sketches
+    def edit_profile(self) -> sketch_editor.SketchEditor | None:
+        board_id = self._single()
+        if board_id not in self.controller.doc.boards:
+            return None
+        return sketch_editor.edit_profile(self.window(), self.controller, board_id)
+
+    def _remove_profile(self) -> None:
+        board_id = self._single()
+        if board_id in self.controller.doc.boards:
+            self.controller.set_profile(board_id, None)
+
+    def _current_cut(self) -> str | None:
+        item = self.cut_list.currentItem()
+        return None if item is None else str(item.data(Qt.ItemDataRole.UserRole))
+
+    def _update_cut_buttons(self) -> None:
+        has = self._current_cut() is not None
+        self.edit_cut_button.setEnabled(has)
+        self.delete_cut_button.setEnabled(has)
+
+    def add_cut(self) -> sketch_editor.CutEditor | None:
+        board_id = self._single()
+        if board_id not in self.controller.doc.boards:
+            return None
+        return sketch_editor.edit_cut(self.window(), self.controller, board_id)
+
+    def edit_cut(self) -> sketch_editor.CutEditor | None:
+        board_id, cut_id = self._single(), self._current_cut()
+        if board_id not in self.controller.doc.boards or cut_id is None:
+            return None
+        return sketch_editor.edit_cut(self.window(), self.controller, board_id, cut_id)
+
+    def _delete_cut(self) -> None:
+        board_id, cut_id = self._single(), self._current_cut()
+        if board_id in self.controller.doc.boards and cut_id is not None:
+            self.controller.delete_cut(board_id, cut_id)

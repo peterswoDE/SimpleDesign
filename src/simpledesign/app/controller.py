@@ -13,7 +13,7 @@ change. A document of a few hundred parts is a few hundred kB - no problem.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import TypeVar, override
 
@@ -22,13 +22,14 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from simpledesign.core.io import sdz
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
-from simpledesign.core.model.document import Document
+from simpledesign.core.model.document import Document, ref_key
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.joint import JointKind
-from simpledesign.core.model.part import Axis, Orientation
+from simpledesign.core.model.part import Axis, Orientation, SketchCut
 from simpledesign.core.model.settings import CutSettings
-from simpledesign.core.params.errors import ErrorCode
-from simpledesign.core.params.expression import format_number
+from simpledesign.core.params.errors import ErrorCode, FormulaError
+from simpledesign.core.params.expression import evaluate, format_number, parse
+from simpledesign.core.sketch.model import Sketch
 from simpledesign.core.templates import template as tpl
 from simpledesign.core.templates.library import TemplateLibrary
 
@@ -291,6 +292,68 @@ class Controller(QObject):
                 d.update_material(material)
 
         self.execute(self.tr("Material aktualisieren"), change)
+
+    # ================================================================== sketches
+    def formula_value(self, owner_id: str | None, text: str) -> float:
+        """Value of user input in the scope of ``owner_id`` (current evaluation).
+
+        Raises FormulaError for invalid input or names without a value.
+        """
+        scope = self.doc.scope_of(owner_id) if owner_id is not None else None
+        stored = self.doc.to_stored(text, scope)
+        values = self.evaluation.values
+        try:
+            return evaluate(parse(stored), lambda ref: values[ref_key(ref)])
+        except KeyError as missing:
+            raise FormulaError(ErrorCode.UNKNOWN_NAME, name=text) from missing
+
+    def sketch_formulas(self, board_id: str, sketch: Sketch) -> dict[str, str]:
+        """Dimension formulas of a stored sketch as the user sees them."""
+        board = self.doc.boards[board_id]
+        scope = self.doc.scope_of(board_id)
+        return {
+            c.id: self.doc.to_display(board.expressions[c.formula_key], scope)
+            for c in sketch.dimensions()
+            if c.formula_key in board.expressions
+        }
+
+    def expression_text(self, owner_id: str, prop: str) -> str:
+        board = self.doc.boards[owner_id]
+        return self.doc.to_display(board.expressions.get(prop, ""), self.doc.scope_of(owner_id))
+
+    def add_profile_board(
+        self, orientation: Orientation, sketch: Sketch, formulas: Mapping[str, str]
+    ) -> str:
+        """New part with a sketched outline, placed at a free spot."""
+        x, y, z = self.free_position()
+
+        def change(d: Document) -> str:
+            board = d.add_board(material_id=self.library.default(), orientation=orientation)
+            for axis, value in zip("xyz", (x, y, z), strict=True):
+                board.expressions[axis] = format_number(value)
+            d.set_profile(board.id, sketch, formulas)
+            return board.id
+
+        board_id = self.execute(self.tr("Skizzenteil hinzufügen"), change)
+        self.set_selection([board_id])
+        return board_id
+
+    def set_profile(
+        self, board_id: str, sketch: Sketch | None, formulas: Mapping[str, str] | None = None
+    ) -> None:
+        values = dict(self.evaluation.values)
+        text = self.tr("Profil ändern") if sketch is not None else self.tr("Profil entfernen")
+        self.execute(text, lambda d: d.set_profile(board_id, sketch, formulas, values))
+
+    def set_cut(
+        self, board_id: str, cut: SketchCut, formulas: Mapping[str, str], depth: str
+    ) -> None:
+        self.execute(
+            self.tr("Ausschnitt ändern"), lambda d: d.set_cut(board_id, cut, formulas, depth)
+        )
+
+    def delete_cut(self, board_id: str, cut_id: str) -> None:
+        self.execute(self.tr("Ausschnitt löschen"), lambda d: d.delete_cut(board_id, cut_id))
 
     def set_orientation(self, board_id: str, orientation: Orientation) -> None:
         def change(d: Document) -> None:

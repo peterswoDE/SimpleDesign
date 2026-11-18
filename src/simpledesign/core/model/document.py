@@ -30,6 +30,8 @@ from simpledesign.core.model.part import (
     Group,
     Orientation,
     Parameter,
+    SketchCut,
+    is_sketch_property,
 )
 from simpledesign.core.model.settings import CutSettings
 from simpledesign.core.params.errors import ErrorCode, FormulaError
@@ -44,6 +46,7 @@ from simpledesign.core.params.expression import (
     references,
     replace_references,
 )
+from simpledesign.core.sketch.model import Sketch
 
 NAME_RE = re.compile(r"^[^\W\d]\w*$")
 
@@ -248,7 +251,7 @@ class Document:
         if prop is None:
             self.parameters[owner_id].expression = stored
         else:
-            if prop not in EDITABLE_PROPERTIES:
+            if prop not in EDITABLE_PROPERTIES and not is_sketch_property(prop):
                 raise KeyError(prop)
             self.boards[owner_id].expressions[prop] = stored
 
@@ -257,7 +260,7 @@ class Document:
         for param_id in self.parameters:
             yield param_id, None
         for board in self.boards.values():
-            for prop in EDITABLE_PROPERTIES:
+            for prop in board.formula_properties():
                 yield board.id, prop
 
     # ================================================================== create
@@ -538,6 +541,60 @@ class Document:
                 twin.attached_id = mapping[joint.attached_id]
                 self.joints[twin.id] = twin
         return [mapping[i] for i in top]
+
+    # ================================================================== sketches
+    def _set_sketch_formulas(
+        self, board: Board, old: Sketch | None, new: Sketch | None, formulas: Mapping[str, str]
+    ) -> None:
+        """Replace the dimension formulas of ``old`` by those of ``new``.
+
+        ``formulas``: user input (names) per constraint id. Raises FormulaError.
+        """
+        for c in old.dimensions() if old is not None else []:
+            board.expressions.pop(c.formula_key, None)
+        for c in new.dimensions() if new is not None else []:
+            self.set_expression(board.id, c.formula_key, formulas.get(c.id, "1"))
+
+    def set_profile(
+        self,
+        board_id: str,
+        sketch: Sketch | None,
+        formulas: Mapping[str, str] | None = None,
+        values: Mapping[str, float] | None = None,
+    ) -> None:
+        """Give a board a sketched outline (or remove it with ``sketch=None``).
+
+        Removing it keeps the current size: ``values`` are the evaluated node values.
+        """
+        board = self.boards[board_id]
+        if sketch is None and board.profile is not None and values is not None:
+            for prop in ("length", "width"):
+                value = values.get(f"{board_id}.{prop}")
+                if value is not None:
+                    board.expressions[prop] = format_number(value)
+        self._set_sketch_formulas(board, board.profile, sketch, formulas or {})
+        board.profile = None if sketch is None else sketch.copy()
+
+    def set_cut(
+        self, board_id: str, cut: SketchCut, formulas: Mapping[str, str], depth: str
+    ) -> None:
+        """Add a sketch cut-out or replace the one with the same id."""
+        cut = copy.deepcopy(cut)
+        board = self.boards[board_id]
+        old = next((c for c in board.cuts if c.id == cut.id), None)
+        self._set_sketch_formulas(board, old.sketch if old else None, cut.sketch, formulas)
+        self.set_expression(board_id, cut.depth_key, depth)
+        if old is None:
+            board.cuts.append(cut)
+        else:
+            board.cuts[board.cuts.index(old)] = cut
+
+    def delete_cut(self, board_id: str, cut_id: str) -> None:
+        board = self.boards[board_id]
+        cut = next(c for c in board.cuts if c.id == cut_id)
+        self._set_sketch_formulas(board, cut.sketch, None, {})
+        board.expressions.pop(cut.depth_key, None)
+        board.cuts.remove(cut)
 
     # ================================================================== move
     def translate(self, ids: Iterable[str], delta: tuple[float, float, float]) -> None:

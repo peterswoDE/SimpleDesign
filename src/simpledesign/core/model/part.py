@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from simpledesign.core.sketch.model import Sketch
+
 
 class Axis(StrEnum):
     X = "x"
@@ -63,6 +65,14 @@ EDITABLE_PROPERTIES = DIMENSIONS + POSITION + PATTERN
 DERIVED_PROPERTIES = ("x2", "y2", "z2")
 PROPERTIES = EDITABLE_PROPERTIES + DERIVED_PROPERTIES
 
+# Formula keys of sketches: ``d.<constraint id>`` (dimension), ``depth.<cut id>``.
+SKETCH_PREFIXES = ("d.", "depth.")
+
+
+def is_sketch_property(prop: str) -> bool:
+    return prop.startswith(SKETCH_PREFIXES)
+
+
 END_PROPERTY = {Axis.X: "x2", Axis.Y: "y2", Axis.Z: "z2"}
 
 
@@ -95,6 +105,32 @@ class Group:
     visible: bool = True
 
 
+class Face(StrEnum):
+    """Face of a board a cut-out sketch sits on (seen from the top side)."""
+
+    TOP = "top"  # + thickness side
+    BOTTOM = "bottom"
+
+
+@dataclass(slots=True)
+class SketchCut:
+    """A pocket or through cut-out drawn as a sketch on a board face.
+
+    Sketch coordinates: u along the length, v along the width, from the
+    board's corner - as seen from the top, also for the bottom face.
+    Depth formula: ``board.expressions["depth.<id>"]``.
+    """
+
+    id: str
+    sketch: Sketch
+    face: Face = Face.TOP
+    through: bool = False
+
+    @property
+    def depth_key(self) -> str:
+        return f"depth.{self.id}"
+
+
 @dataclass(slots=True)
 class Board:
     id: str
@@ -111,3 +147,20 @@ class Board:
     # Grain direction does not matter for this part (e.g. hidden inner parts):
     # the cut list may turn it. Has no effect for materials without grain.
     ignore_grain: bool = False
+    # Sketched outline: the part is this profile extruded by the thickness.
+    # Length and width then follow from the profile (bounding box).
+    profile: Sketch | None = None
+    cuts: list[SketchCut] = field(default_factory=list)
+
+    def sketches(self) -> list[tuple[str, Sketch]]:
+        """(key, sketch) of the profile and every cut; keys as in Evaluation.sketches."""
+        found = [(self.id, self.profile)] if self.profile is not None else []
+        found += [(f"{self.id}/{cut.id}", cut.sketch) for cut in self.cuts]
+        return found
+
+    def formula_properties(self) -> list[str]:
+        """Every property with a formula (profile boards have no length/width formula)."""
+        props = [
+            p for p in EDITABLE_PROPERTIES if self.profile is None or p not in ("length", "width")
+        ]
+        return props + [p for p in self.expressions if is_sketch_property(p)]

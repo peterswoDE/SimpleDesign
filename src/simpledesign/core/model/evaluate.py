@@ -10,22 +10,40 @@ expensive work - geometry - is cached separately per board.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from simpledesign.core.model.document import Document, node_key, ref_key
-from simpledesign.core.model.machining import Machining, compute_machining
+from simpledesign.core.model.machining import Machining, SketchFeature, compute_machining
 from simpledesign.core.model.part import (
     DIMENSIONS,
     EDITABLE_PROPERTIES,
     END_PROPERTY,
     Axis,
+    Board,
+    Face,
     Orientation,
     default_expressions,
+    is_sketch_property,
 )
 from simpledesign.core.model.state import BoardState
 from simpledesign.core.params.errors import ErrorCode, FormulaError
 from simpledesign.core.params.expression import Node, evaluate, parse, references
 from simpledesign.core.params.graph import topological_order
+from simpledesign.core.sketch import profile
+from simpledesign.core.sketch.model import ConstraintKind, Sketch
+from simpledesign.core.sketch.solver import NumpySolver, References, SolveResult
+
+
+@dataclass(slots=True)
+class SketchSolution:
+    """Solved sketch of a board (profile or cut-out)."""
+
+    result: SolveResult
+    regions: tuple[profile.Region, ...] = ()  # last valid regions (may be empty)
+    error: FormulaError | None = None
+    # Profiles: min corner of the bounding box (the part's local origin).
+    offset: tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass(slots=True)
@@ -34,6 +52,8 @@ class Evaluation:
     errors: dict[str, FormulaError]
     boards: dict[str, BoardState]
     machining: Machining
+    # Key: board id (profile) or "<board id>/<cut id>".
+    sketches: dict[str, SketchSolution] = field(default_factory=dict)
 
     def value(self, owner_id: str, prop: str | None = None) -> float:
         return self.values[node_key(owner_id, prop)]
@@ -45,8 +65,9 @@ class Evaluation:
 _DEFAULTS = {prop: float(text) for prop, text in default_expressions().items()}
 
 
-def _validate(prop: str | None, value: float) -> float:
-    if prop in DIMENSIONS and value <= 0:
+def _validate(prop: str | None, value: float, signed: bool = False) -> float:
+    sketch_value = bool(prop) and is_sketch_property(prop or "") and not signed
+    if (prop in DIMENSIONS or sketch_value) and value <= 0:
         raise FormulaError(ErrorCode.NOT_POSITIVE, value=value)
     if prop == "count":
         if abs(value - round(value)) > 1e-9:
@@ -62,11 +83,21 @@ class Evaluator:
 
     def __init__(self) -> None:
         self.last_valid: dict[str, float] = {}
+        self.last_regions: dict[str, tuple[profile.Region, ...]] = {}
+        self.solver = NumpySolver()
 
     def evaluate(self, doc: Document) -> Evaluation:
         parsed: dict[str, Node] = {}
         prop_of: dict[str, str | None] = {}
-        derived: dict[str, tuple[str, str]] = {}
+        derived: dict[str, Callable[[dict[str, float]], float]] = {}
+        sketches: dict[str, SketchSolution] = {}
+        signed = {
+            node_key(board.id, c.formula_key)
+            for board in doc.boards.values()
+            for _key, sketch in board.sketches()
+            for c in sketch.constraints.values()
+            if c.kind == ConstraintKind.ANGLE
+        }
         deps: dict[str, set[str]] = {}
         errors: dict[str, FormulaError] = {}
 
@@ -90,7 +121,9 @@ class Evaluator:
                 size = node_key(board.id, board.orientation.dimension_along(axis))
                 prop_of[key] = end_prop
                 deps[key] = {start, size}
-                derived[key] = (start, size)
+                derived[key] = _sum(start, size)
+            if board.profile is not None:
+                self._profile_nodes(board, board.profile, prop_of, deps, derived, sketches)
 
         for key, key_deps in deps.items():
             unknown = sorted(d for d in key_deps if d not in deps)
@@ -113,11 +146,10 @@ class Evaluator:
                 continue
             try:
                 if key in derived:
-                    start_key, size_key = derived[key]
-                    value = values[start_key] + values[size_key]
+                    value = derived[key](values)
                 else:
                     value = evaluate(parsed[key], lambda ref: values[ref_key(ref)])
-                    value = _validate(prop_of[key], value)
+                    value = _validate(prop_of[key], value, key in signed)
             except FormulaError as error:
                 errors[key] = error
                 values[key] = fallback(key)
@@ -131,7 +163,103 @@ class Evaluator:
             board.id: _board_state(board.id, board.orientation, board.pattern_axis, values)
             for board in doc.boards.values()
         }
-        return Evaluation(values, errors, boards, compute_machining(doc, boards))
+        for board in doc.boards.values():
+            if board.profile is not None and board.id not in sketches:
+                # length/width failed before solving (e.g. a dimension error)
+                self._profile_solution(board, board.profile, values, sketches)
+        features: dict[str, list[SketchFeature]] = {}
+        for board in doc.boards.values():
+            state = boards[board.id]
+            if board.id in sketches and sketches[board.id].regions:
+                features.setdefault(board.id, []).append(
+                    SketchFeature(sketches[board.id].regions, cut=False)
+                )
+            for cut in board.cuts:
+                key = f"{board.id}/{cut.id}"
+                refs = References.for_face(state.length, state.width)
+                sketches[key] = solution = self._solve(key, board, cut.sketch, refs, values)
+                if solution.regions:
+                    depth = values.get(node_key(board.id, cut.depth_key), state.thickness)
+                    features.setdefault(board.id, []).append(
+                        SketchFeature(
+                            solution.regions,
+                            top=cut.face == Face.TOP,
+                            depth=None if cut.through else depth,
+                        )
+                    )
+        machining = compute_machining(doc, boards, features)
+        return Evaluation(values, errors, boards, machining, sketches)
+
+    # ------------------------------------------------------------------ sketches
+    def _solve(
+        self,
+        key: str,
+        board: Board,
+        sketch: Sketch,
+        references: References,
+        values: dict[str, float],
+    ) -> SketchSolution:
+        dims = {
+            c.id: values.get(node_key(board.id, c.formula_key), 0.0) for c in sketch.dimensions()
+        }
+        result = self.solver.solve(sketch, dims, references)
+        error: FormulaError | None = None
+        if not result.ok:
+            error = FormulaError(ErrorCode.SKETCH_UNSOLVABLE, constraints=result.failed)
+        else:
+            try:
+                self.last_regions[key] = profile.regions(sketch, result.points, result.radii)
+            except profile.ProfileError as problem:
+                error = FormulaError(ErrorCode.PROFILE_INVALID, problem=problem.problem.value)
+        return SketchSolution(result, self.last_regions.get(key, ()), error)
+
+    def _profile_solution(
+        self,
+        board: Board,
+        sketch: Sketch,
+        values: dict[str, float],
+        sketches: dict[str, SketchSolution],
+    ) -> SketchSolution:
+        if board.id not in sketches:
+            found = self._solve(board.id, board, sketch, References.for_plane(), values)
+            if found.regions:
+                lo, _hi = profile.bounds(found.regions)
+                found.regions = profile.translate(found.regions, -lo[0], -lo[1])
+                found.offset = lo
+            sketches[board.id] = found
+        return sketches[board.id]
+
+    def _profile_nodes(
+        self,
+        board: Board,
+        sketch: Sketch,
+        prop_of: dict[str, str | None],
+        deps: dict[str, set[str]],
+        derived: dict[str, Callable[[dict[str, float]], float]],
+        sketches: dict[str, SketchSolution],
+    ) -> None:
+        """Length and width of a profile part follow from its solved sketch."""
+        dim_keys = {node_key(board.id, c.formula_key) for c in sketch.dimensions()}
+
+        def size(axis: int) -> Callable[[dict[str, float]], float]:
+            def compute(values: dict[str, float]) -> float:
+                found = self._profile_solution(board, sketch, values, sketches)
+                if found.error is not None:
+                    raise found.error
+                lo, hi = profile.bounds(found.regions)
+                return hi[axis] - lo[axis]
+
+            return compute
+
+        for axis, prop in enumerate(("length", "width")):
+            key = node_key(board.id, prop)
+            prop_of[key] = prop
+            deps[key] = set(dim_keys)
+            derived[key] = size(axis)
+
+
+def _sum(a: str, b: str) -> Callable[[dict[str, float]], float]:
+    return lambda values: values[a] + values[b]
 
 
 def _board_state(

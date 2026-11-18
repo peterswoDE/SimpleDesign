@@ -22,14 +22,19 @@ from simpledesign.core.model.part import (
     EDITABLE_PROPERTIES,
     Axis,
     Board,
+    Face,
     Group,
     Orientation,
     Parameter,
+    SketchCut,
     default_expressions,
+    is_sketch_property,
 )
 from simpledesign.core.model.settings import CutSettings
+from simpledesign.core.sketch.model import from_dict as sketch_from_dict
+from simpledesign.core.sketch.model import to_dict as sketch_to_dict
 
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 FILE_SUFFIX = ".sdz"
 
 type Json = dict[str, Any]
@@ -56,7 +61,16 @@ def _migrate_2_to_3(data: Json) -> Json:
 
 
 # MIGRATIONS[n] upgrades a version-n dict to version n + 1.
-MIGRATIONS: dict[int, Callable[[Json], Json]] = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
+def _migrate_3_to_4(data: Json) -> Json:
+    # Version 4 adds sketches (profile, cuts) to boards; old boards have none.
+    return data
+
+
+MIGRATIONS: dict[int, Callable[[Json], Json]] = {
+    1: _migrate_1_to_2,
+    2: _migrate_2_to_3,
+    3: _migrate_3_to_4,
+}
 
 
 class FileFormatError(Exception):
@@ -86,6 +100,16 @@ def to_dict(doc: Document) -> Json:
                 "visible": b.visible,
                 "transparent": b.transparent,
                 "ignore_grain": b.ignore_grain,
+                "profile": None if b.profile is None else sketch_to_dict(b.profile),
+                "cuts": [
+                    {
+                        "id": c.id,
+                        "face": c.face.value,
+                        "through": c.through,
+                        "sketch": sketch_to_dict(c.sketch),
+                    }
+                    for c in b.cuts
+                ],
             }
             for b in doc.boards.values()
         ],
@@ -126,8 +150,13 @@ def from_dict(data: Json) -> Document:
         for b in data["boards"]:
             expressions = default_expressions()
             expressions.update(
-                {k: str(v) for k, v in b["expressions"].items() if k in EDITABLE_PROPERTIES}
+                {
+                    k: str(v)
+                    for k, v in b["expressions"].items()
+                    if k in EDITABLE_PROPERTIES or is_sketch_property(k)
+                }
             )
+            profile = b.get("profile")
             doc.boards[b["id"]] = Board(
                 id=b["id"],
                 name=b["name"],
@@ -139,6 +168,13 @@ def from_dict(data: Json) -> Document:
                 visible=bool(b["visible"]),
                 transparent=bool(b["transparent"]),
                 ignore_grain=bool(b["ignore_grain"]),
+                profile=None if profile is None else sketch_from_dict(profile),
+                cuts=[
+                    SketchCut(
+                        c["id"], sketch_from_dict(c["sketch"]), Face(c["face"]), bool(c["through"])
+                    )
+                    for c in b.get("cuts", [])
+                ],
             )
         for j in data["joints"]:
             kind = JointKind(j["kind"])
