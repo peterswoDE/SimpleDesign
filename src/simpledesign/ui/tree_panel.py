@@ -70,6 +70,39 @@ class TreePanel(QWidget):
         self.action_group = action(
             self.tr("Neue Gruppe aus Auswahl"), "Ctrl+G", self.group_selected
         )
+        self.action_save_template = action(
+            self.tr("Gruppe als Vorlage speichern…"), None, self.save_group_as_template
+        )
+
+    def selected_group(self) -> str | None:
+        """The id of the one selected group, if exactly one group is selected."""
+        ids = self.selected_ids()
+        return ids[0] if len(ids) == 1 and ids[0] in self.controller.doc.groups else None
+
+    def save_group_as_template(self) -> None:
+        group = self.selected_group()
+        if group is None:
+            return
+        from simpledesign.ui.templates_dialog import SaveTemplateDialog
+
+        dialog = SaveTemplateDialog(self.controller.doc.groups[group].name, self)
+        if dialog.exec() != SaveTemplateDialog.DialogCode.Accepted:
+            return
+        name = dialog.name.text().strip()
+        if self.controller.templates.path_for(name).exists():
+            answer = QMessageBox.question(
+                self,
+                self.tr("Vorlage speichern"),
+                self.tr("Die Vorlage „{0}“ gibt es schon. Ersetzen?").format(name),
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            self.controller.save_group_as_template(
+                group, name, dialog.description.toPlainText().strip()
+            )
+        except OSError as error:
+            QMessageBox.warning(self, self.tr("Vorlage speichern"), str(error))
 
     # ------------------------------------------------------------------ building
     def rebuild(self) -> None:
@@ -239,4 +272,6 @@ class TreePanel(QWidget):
                 move_menu.addAction(group.name, partial(self._move_to, group.id))
             menu.addSeparator()
         menu.addAction(self.action_group)
+        if self.selected_group() is not None:
+            menu.addAction(self.action_save_template)
         menu.exec(self.tree.viewport().mapToGlobal(pos))

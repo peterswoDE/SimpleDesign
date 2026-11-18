@@ -26,6 +26,7 @@ from simpledesign.ui.materials_dialog import MaterialsDialog
 from simpledesign.ui.parameters_panel import ParametersPanel
 from simpledesign.ui.properties_panel import PropertiesPanel
 from simpledesign.ui.scene import Scene
+from simpledesign.ui.templates_dialog import InsertTemplateDialog, insert_template
 from simpledesign.ui.tree_panel import TreePanel
 from simpledesign.ui.viewport import Viewport
 
@@ -139,6 +140,11 @@ class MainWindow(QMainWindow):
         self.action_add_parameter = QAction(self.tr("Parameter"), self)
         self.action_add_parameter.setToolTip(self.tr("Neuer Parameter"))
         self.action_add_parameter.triggered.connect(self._add_parameter)
+        self.action_insert_template = QAction(self.tr("Vorlage…"), self)
+        self.action_insert_template.setToolTip(
+            self.tr("Fertiges Möbel (Regal, Schrank, Tisch, …) einfügen")
+        )
+        self.action_insert_template.triggered.connect(self.insert_template)
 
         self.action_snap = QAction(self.tr("An Kanten &einrasten"), self)
         self.action_snap.setCheckable(True)
@@ -190,8 +196,14 @@ class MainWindow(QMainWindow):
 
         insert_menu = menu_bar.addMenu(self.tr("&Einfügen"))
         insert_menu.addActions(
-            [self.action_add_board, self.action_add_group, self.action_add_parameter]
+            [
+                self.action_add_board,
+                self.action_add_group,
+                self.action_add_parameter,
+                self.action_insert_template,
+            ]
         )
+        insert_menu.addAction(tree.action_save_template)
 
         joint_menu = menu_bar.addMenu(self.tr("&Verbindung"))
         joint_menu.addActions(list(self.joints_panel.add_actions.values()))
@@ -229,7 +241,12 @@ class MainWindow(QMainWindow):
         toolbar.addActions([self.action_undo, self.action_redo])
         toolbar.addSeparator()
         toolbar.addActions(
-            [self.action_add_board, self.action_add_group, self.action_add_parameter]
+            [
+                self.action_add_board,
+                self.action_add_group,
+                self.action_add_parameter,
+                self.action_insert_template,
+            ]
         )
         toolbar.addSeparator()
         toolbar.addActions(list(self.view_actions.values()))
@@ -257,6 +274,24 @@ class MainWindow(QMainWindow):
         self.parameters_dock.show()
         self.parameters_dock.raise_()
         self.parameters_panel.add_parameter()
+
+    def insert_template(self) -> None:
+        library = self.controller.templates
+        dialog = InsertTemplateDialog(library, self)
+        if library.errors:
+            QMessageBox.warning(
+                self,
+                self.tr("Vorlagen"),
+                self.tr("Einige Vorlagen konnten nicht gelesen werden:\n{0}").format(
+                    "\n".join(library.errors)
+                ),
+            )
+        first = not self.controller.doc.boards
+        while dialog.exec() == InsertTemplateDialog.DialogCode.Accepted:
+            if insert_template(dialog, self.controller.insert_template):
+                if first:
+                    self.viewport.fit_view()
+                return
 
     def _set_snapping(self, enabled: bool) -> None:
         self.scene.snapping_enabled = enabled

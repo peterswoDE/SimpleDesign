@@ -24,6 +24,7 @@ from simpledesign.core.materials.material import Material
 from simpledesign.core.model.joint import Joint, JointKind, default_params
 from simpledesign.core.model.part import (
     EDITABLE_PROPERTIES,
+    POSITION,
     PROPERTIES,
     Board,
     Group,
@@ -35,6 +36,7 @@ from simpledesign.core.params.errors import ErrorCode, FormulaError
 from simpledesign.core.params.expression import (
     FUNCTIONS,
     Ref,
+    add_offset,
     format_number,
     is_plain_number,
     normalize_input,
@@ -468,7 +470,25 @@ class Document:
         anything else stay as they are.
         """
         top = [i for i in ids if i in self.boards or i in self.groups]
-        copied = self.with_contents(top)
+        return self.copy_from(self, top, keep_parent=True)
+
+    def copy_from(
+        self,
+        source: Document,
+        top: Iterable[str],
+        parent_id: str | None = None,
+        *,
+        keep_parent: bool = False,
+    ) -> list[str]:
+        """Copy boards/groups (with contents) from ``source`` (may be ``self``).
+
+        ``parent_id`` is the group the top-level copies go into; ``keep_parent``
+        keeps their current group instead (only sensible when ``source`` is ``self``). Names
+        are made unique, materials are taken over if this document lacks them.
+        Returns the IDs of the top-level copies.
+        """
+        top = list(top)
+        copied = source.with_contents(top)
         mapping = {old: new_id() for old in copied}
 
         def remap(stored: str) -> str:
@@ -480,27 +500,37 @@ class Document:
 
             return replace_references(stored, replace)
 
-        for old_id in [g for g in self.groups if g in copied]:
-            group = copy.deepcopy(self.groups[old_id])
+        def new_parent(old: str | None, obj_id: str) -> str | None:
+            if obj_id in top and not keep_parent:
+                return parent_id
+            return mapping.get(old or "", old)
+
+        for old_id in [g for g in source.groups if g in copied]:
+            group = copy.deepcopy(source.groups[old_id])
             group.id = mapping[old_id]
-            group.parent_id = mapping.get(group.parent_id or "", group.parent_id)
+            group.parent_id = new_parent(group.parent_id, old_id)
             group.name = self.unique_name(group.name, is_parameter=False)
             self.groups[group.id] = group
-        for old_id in [p for p in self.parameters if p in copied]:
-            param = copy.deepcopy(self.parameters[old_id])
+        for old_id in [p for p in source.parameters if p in copied]:
+            param = copy.deepcopy(source.parameters[old_id])
             param.id = mapping[old_id]
             param.group_id = mapping.get(param.group_id or "", param.group_id)
             param.expression = remap(param.expression)
+            param.name = self.unique_name(param.name, is_parameter=True, group_id=param.group_id)
             self.parameters[param.id] = param
-        for old_id in [b for b in self.boards if b in copied]:
-            board = copy.deepcopy(self.boards[old_id])
+        for old_id in [b for b in source.boards if b in copied]:
+            board = copy.deepcopy(source.boards[old_id])
             board.id = mapping[old_id]
-            board.group_id = mapping.get(board.group_id or "", board.group_id)
+            board.group_id = new_parent(board.group_id, old_id)
             board.name = self.unique_name(board.name, is_parameter=False)
             board.expressions = {k: remap(v) for k, v in board.expressions.items()}
+            if board.material_id not in self.materials:
+                self.materials[board.material_id] = copy.deepcopy(
+                    source.materials[board.material_id]
+                )
             self.boards[board.id] = board
         # Joints between two copied boards are copied too.
-        for joint in list(self.joints.values()):
+        for joint in list(source.joints.values()):
             if joint.main_id in copied and joint.attached_id in copied:
                 twin = copy.deepcopy(joint)
                 twin.id = new_id()
@@ -508,3 +538,35 @@ class Document:
                 twin.attached_id = mapping[joint.attached_id]
                 self.joints[twin.id] = twin
         return [mapping[i] for i in top]
+
+    # ================================================================== move
+    def translate(self, ids: Iterable[str], delta: tuple[float, float, float]) -> None:
+        """Move boards/groups (with contents) by ``delta``.
+
+        Only *absolute* positions change: a position formula that (directly or
+        through parameters) uses a position of another moved board follows by
+        itself. All others get the offset added (numbers are added directly).
+        """
+        moved = self.with_contents(ids)
+        boards = [b for b in self.boards.values() if b.id in moved]
+        for axis, d in zip(POSITION, delta, strict=True):
+            if abs(d) < 1e-12:
+                continue
+            for board in boards:
+                stored = board.expressions[axis]
+                if self._uses_boards(stored, moved, set()):
+                    continue
+                board.expressions[axis] = add_offset(stored, d)
+
+    def _uses_boards(self, stored: str, boards: set[str], seen: set[str]) -> bool:
+        for ref in references(parse(stored)):
+            target = ref_target_id(ref)
+            if target is None or target in seen:
+                continue
+            if target in boards and target in self.boards:
+                return True
+            if target in self.parameters:
+                seen.add(target)
+                if self._uses_boards(self.parameters[target].expression, boards, seen):
+                    return True
+        return False

@@ -240,6 +240,8 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 - Eingebaut: Regal, Korpus/Schrank (Fachböden, Rückwand in Nut), Tisch, Bank.
 - Nach dem Einfügen frei weiterbearbeitbar; Vorlagen-Parameter steuern weiter.
 
+> **Stand Phase 4 (umgesetzt):** Vorlagen sind `.sdt`-Dateien (sdz-JSON mit einer obersten Gruppe; deren Parameter sind die Vorlagen-Parameter) im Ordner `templates` neben den Wiederherstellungsdateien. „Einfügen → Vorlage…“ zeigt eingebaute und eigene Vorlagen, Parameter lassen sich vor dem Einfügen ändern; die Vorlage landet rechts neben dem Vorhandenen (Abstand 200 mm), Namen werden eindeutig gemacht (`Seite_links_2`, `H_2`). „Gruppe als Vorlage speichern…“ (Kontextmenü/Einfügen) ersetzt Bezüge nach außen durch ihre aktuellen Werte. Eingebaut: Regal, Korpus/Schrank (Rückwand in Nut), Tisch (Zapfen), Bank.
+
 ### Phase 5 – Skizzen + Extrusion
 - Eigener Solver (siehe Lizenz-Hinweis), austauschbar hinter `SketchSolver`.
 - Skizzenmodus auf Hauptebene oder Teilefläche (semantische Referenz).

@@ -29,12 +29,17 @@ from simpledesign.core.model.part import Axis, Orientation
 from simpledesign.core.model.settings import CutSettings
 from simpledesign.core.params.errors import ErrorCode
 from simpledesign.core.params.expression import format_number
+from simpledesign.core.templates import template as tpl
+from simpledesign.core.templates.library import TemplateLibrary
 
 T = TypeVar("T")
 
 AUTOSAVE_INTERVAL_MS = 120_000
 RECOVERY_FILE = "recovery.sdz"
 LIBRARY_FILE = "materials.json"
+TEMPLATES_FOLDER = "templates"
+# Gap between furniture placed next to each other (inserting a template).
+PLACEMENT_GAP = 200.0
 _MERGE_COMMAND_ID = 1
 
 
@@ -90,6 +95,7 @@ class Controller(QObject):
         parent: QObject | None = None,
         recovery_dir: Path | None = None,
         library_path: Path | None = None,
+        templates_dir: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self.undo_stack = QUndoStack(self)
@@ -110,6 +116,9 @@ class Controller(QObject):
         except LibraryError as error:
             self.library = MaterialLibrary()
             self.library_error = str(error)
+
+        base = recovery_dir or default_recovery_dir()
+        self.templates = TemplateLibrary(templates_dir or base / TEMPLATES_FOLDER)
 
         self.autosave_timer = QTimer(self)
         self.autosave_timer.setInterval(AUTOSAVE_INTERVAL_MS)
@@ -344,6 +353,36 @@ class Controller(QObject):
                 d.set_expression(board_id, axis.value, format_number(value))
 
         self.execute(self.tr("Verschieben"), change)
+
+    # ================================================================== templates
+    def free_position(self) -> tuple[float, float, float]:
+        """Where new furniture goes: right of everything that exists."""
+        right = [
+            origin[0] + state.size[0]
+            for state in self.evaluation.boards.values()
+            for origin in state.instance_origins()
+        ]
+        return (max(right) + PLACEMENT_GAP, 0.0, 0.0) if right else (0.0, 0.0, 0.0)
+
+    def insert_template(
+        self,
+        template: tpl.Template,
+        parameters: dict[str, str] | None = None,
+        parent_id: str | None = None,
+    ) -> str:
+        """Insert a template as a new group (right of the existing parts) and select it."""
+        offset = self.free_position()
+        group_id = self.execute(
+            self.tr("Vorlage einfügen"),
+            lambda d: tpl.insert(d, template, parent_id, parameters, offset),
+        )
+        self.set_selection([group_id])
+        return group_id
+
+    def save_group_as_template(self, group_id: str, name: str, description: str = "") -> Path:
+        values = dict(self.evaluation.values)
+        template = tpl.from_group(self.doc, group_id, values, name, description)
+        return self.templates.add(template)
 
     # ================================================================== files
     def new_document(self) -> None:
