@@ -63,11 +63,12 @@ class JointsPanel(QWidget):
         self.spins: dict[str, QDoubleSpinBox] = {}
         names = dict.fromkeys(name for params in JOINT_DEFAULTS.values() for name in params)
         for name in names:
+            plain = name in ("count", "slope")  # numbers without a unit
             spin = QDoubleSpinBox()
             spin.setRange(0, 10000)
-            spin.setDecimals(0 if name == "count" else 1)
-            spin.setSingleStep(1 if name == "count" else 0.5)
-            spin.setSuffix("" if name == "count" else " mm")
+            spin.setDecimals(0 if plain else 1)
+            spin.setSingleStep(1 if plain else 0.5)
+            spin.setSuffix("" if plain else " mm")
             spin.setKeyboardTracking(False)
             spin.valueChanged.connect(lambda value, n=name: self._set_param(n, value))
             self.form.addRow(joint_param_label(name), spin)

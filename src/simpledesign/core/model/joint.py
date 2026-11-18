@@ -3,8 +3,9 @@
 A joint connects a *main part* (Hauptteil) and an *attached part*
 (Anschlussteil) that touch each other. It may
 
-* remove material (holes, grooves, rabbets) from either part and
-* extend the attached part into the main part (insertion into a groove).
+* remove material (holes, grooves, mortises, fingers …) from either part and
+* extend the attached part into the main part (insertion into a groove,
+  tenon length, finger/dovetail length).
   The extension is part of the rough size in the cut list.
 
 Where exactly the parts touch is not stored: it is found from the computed
@@ -23,6 +24,9 @@ class JointKind(StrEnum):
     SCREW = "screw"  # Schraube (through the main part into the attached part)
     GROOVE = "groove"  # Nut
     RABBET = "rabbet"  # Falz
+    TENON = "tenon"  # Zapfen (blind, in a mortise of the main part)
+    FINGER = "finger"  # Fingerzinken (box joint at a corner)
+    DOVETAIL = "dovetail"  # Schwalbenschwanz (through, tails on the attached part)
 
 
 # Settings per kind with their defaults. ``count`` 0 = automatic from the rules
@@ -50,6 +54,19 @@ JOINT_DEFAULTS: dict[JointKind, dict[str, float]] = {
     JointKind.RABBET: {
         "depth": 10.0,
         "play": 0.5,
+    },
+    JointKind.TENON: {
+        "length": 30.0,  # how far the tenon goes into the main part
+        "thickness": 0.0,  # 0 = one third of the attached part
+        "shoulder": 10.0,  # shoulder at both sides of the tenon
+    },
+    JointKind.FINGER: {
+        "count": 0.0,  # number of fingers of both parts together
+    },
+    JointKind.DOVETAIL: {
+        "count": 0.0,  # number of tails
+        "slope": 6.0,  # 1:6
+        "pin_width": 8.0,  # narrowest width of a pin (on the outside face)
     },
 }
 

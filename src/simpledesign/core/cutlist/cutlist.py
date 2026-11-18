@@ -36,7 +36,7 @@ class CutRow:
     names: tuple[str, ...]
     has_grain: bool
     holes: int = 0  # per part
-    cutouts: int = 0  # grooves, rabbets … per part
+    cutouts: int = 0  # grooves, mortises, tenons … per part
 
 
 def build_cutlist(doc: Document, evaluation: Evaluation) -> list[CutRow]:
@@ -59,7 +59,7 @@ def build_cutlist(doc: Document, evaluation: Evaluation) -> list[CutRow]:
             )
             parts_by_key.setdefault(key, []).append(board.name)
             holes = sum(isinstance(f, Hole) for f in shape.features)
-            counts[key] = (holes, len(shape.features) - holes)
+            counts[key] = (holes, shape.cut_operations)
 
     rows = [
         CutRow(

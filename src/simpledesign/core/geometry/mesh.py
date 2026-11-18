@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from simpledesign.core.model.machining import Cutout, Feature, Hole
+from simpledesign.core.model.machining import Feature, Hole, Prism
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -102,7 +102,8 @@ def _tool(size: Size, feature: Feature) -> TopoDS_Shape:
         return BRepPrimAPI_MakeCylinder(
             axis, feature.diameter / 2, feature.depth + _OVERCUT
         ).Shape()
-    assert isinstance(feature, Cutout)
+    if isinstance(feature, Prism):
+        return _prism_tool(size, feature)
     lo, hi = list(feature.lo), list(feature.hi)
     for i in range(3):
         # Open where the cut-out reaches the part surface.
@@ -111,6 +112,46 @@ def _tool(size: Size, feature: Feature) -> TopoDS_Shape:
         if hi[i] >= size[i] - 1e-6:
             hi[i] += _OVERCUT
     return BRepPrimAPI_MakeBox(gp_Pnt(*lo), gp_Pnt(*hi)).Shape()
+
+
+def _prism_tool(size: Size, prism: Prism) -> TopoDS_Shape:
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    a = prism.axis
+    start = prism.points[0][a]
+    length = prism.length
+    if start <= 1e-6:
+        start -= _OVERCUT
+        length += _OVERCUT
+    if prism.points[0][a] + prism.length >= size[a] - 1e-6:
+        length += _OVERCUT
+    polygon = BRepBuilderAPI_MakePolygon()
+    points = prism.points
+    for n, point in enumerate(points):
+        q = list(point)
+        q[a] = start
+        for i in range(3):
+            # Open where a corner lies on the part surface: move it outwards along
+            # the edge that leaves the surface, so slanted sides keep their angle.
+            outside = point[i] <= 1e-6 or point[i] >= size[i] - 1e-6
+            if i == a or not outside:
+                continue
+            for other in (points[n - 1], points[(n + 1) % len(points)]):
+                step = point[i] - other[i]
+                if abs(step) > 1e-6:
+                    scale = _OVERCUT / abs(step)
+                    for j in range(3):
+                        if j != a:
+                            q[j] += (point[j] - other[j]) * scale
+                    break
+        polygon.Add(gp_Pnt(*q))
+    polygon.Close()
+    face = BRepBuilderAPI_MakeFace(polygon.Wire()).Face()
+    sweep = [0.0, 0.0, 0.0]
+    sweep[a] = length
+    return BRepPrimAPI_MakePrism(face, gp_Vec(*sweep)).Shape()
 
 
 @lru_cache(maxsize=512)

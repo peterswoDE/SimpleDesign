@@ -99,6 +99,9 @@ def joint_kind_label(kind: JointKind) -> str:
         JointKind.SCREW: _tr("Schrauben"),
         JointKind.GROOVE: _tr("Nut"),
         JointKind.RABBET: _tr("Falz"),
+        JointKind.TENON: _tr("Zapfen"),
+        JointKind.FINGER: _tr("Fingerzinken"),
+        JointKind.DOVETAIL: _tr("Schwalbenschwanz"),
     }
     return labels[kind]
 
@@ -113,6 +116,10 @@ def joint_param_label(name: str) -> str:
         "count": _tr("Anzahl (0 = automatisch)"),
         "depth": _tr("Tiefe"),
         "play": _tr("Spiel"),
+        "thickness": _tr("Zapfendicke (0 = ⅓)"),
+        "shoulder": _tr("Absatz seitlich"),
+        "slope": _tr("Neigung 1 :"),
+        "pin_width": _tr("Zinkenbreite außen"),
     }
     return labels[name]
 
@@ -123,6 +130,9 @@ def joint_error_message(code: JointErrorCode) -> str:
         JointErrorCode.FACE_CONTACT: _tr(
             "Das Anschlussteil liegt mit der Fläche an, es braucht eine Kante "
             "(Hauptteil und Anschlussteil tauschen?)."
+        ),
+        JointErrorCode.MAIN_EDGE: _tr(
+            "Das Anschlussteil muss auf der Fläche des Hauptteils stehen, nicht an seiner Kante."
         ),
         JointErrorCode.TOO_DEEP: _tr("Zu tief für die Materialstärke."),
         JointErrorCode.SCREW_TOO_SHORT: _tr("Die Schraube ist zu kurz."),
@@ -136,7 +146,7 @@ def machining_text(holes: int, cutouts: int) -> str:
     if holes:
         parts.append(_tr("{n} Bohrungen").format(n=holes) if holes > 1 else _tr("1 Bohrung"))
     if cutouts:
-        parts.append(_tr("{n} Nuten/Fälze").format(n=cutouts) if cutouts > 1 else _tr("1 Nut/Falz"))
+        parts.append(_tr("{n} Fräsungen").format(n=cutouts) if cutouts > 1 else _tr("1 Fräsung"))
     return ", ".join(parts)
 
 
