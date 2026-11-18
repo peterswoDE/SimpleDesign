@@ -12,7 +12,6 @@ dependencies = [
     "pyside6>=6.12.0",
     "pyvista>=0.49.2",
     "pyvistaqt>=0.14.0",
-    "slvs>=3.3",
     "vtk>=9.7.2",
 ]
 
@@ -55,7 +54,7 @@ files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
 # Libraries without (complete) type information
-module = ["pyvista.*", "pyvistaqt.*", "vtk.*", "vtkmodules.*", "build123d.*", "OCP.*", "slvs.*"]
+module = ["pyvista.*", "pyvistaqt.*", "vtk.*", "vtkmodules.*", "build123d.*", "OCP.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

@@ -1566,7 +1566,6 @@ dependencies = [
     { name = "pyside6" },
     { name = "pyvista" },
     { name = "pyvistaqt" },
-    { name = "slvs" },
     { name = "vtk" },
 ]
 
@@ -1585,7 +1584,6 @@ requires-dist = [
     { name = "pyside6", specifier = ">=6.12.0" },
     { name = "pyvista", specifier = ">=0.49.2" },
     { name = "pyvistaqt", specifier = ">=0.14.0" },
-    { name = "slvs", specifier = ">=3.3" },
     { name = "vtk", specifier = ">=9.7.2" },
 ]
 
@@ -1595,22 +1593,6 @@ dev = [
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-qt", specifier = ">=4.5.0" },
     { name = "ruff", specifier = ">=0.17.5" },
-]
-
-[[package]]
-name = "slvs"
-version = "3.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ab/7f/e1ffa26cd3772cd347b1be0080ab9acfcce992babde97556a8c15afeb36b/slvs-3.3.tar.gz", hash = "sha256:d9573097aa7afadc437dbd0b8654f7c51012cb8e1f32de8f88ccd1b16252c4e3", size = 7270740, upload-time = "2026-10-21T03:21:53.428Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/aa/6c/806780b976b437f41c52affae6d8ed465515bb05b1139384e3e9dff90bc5/slvs-3.3-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:c5cdb4b3babcb5e3a59cc3d1250088dffc507059af7277bac2feb71a912e7ddb", size = 288565, upload-time = "2026-10-21T03:21:23.041Z" },
-    { url = "https://files.pythonhosted.org/packages/58/87/a945d97ef8df44b82fc3c60e344802d590d2b8f83385b5c4166c0b3f4d4e/slvs-3.3-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:57f2e714f589ef7613cb98ab6e3f66a815ac64758e6d00a7246e2963bf4807a7", size = 258790, upload-time = "2026-10-21T03:21:24.109Z" },
-    { url = "https://files.pythonhosted.org/packages/69/10/3729db08dc56392c7b4b43b4ed4cfd098c749ffcbd215c1ca70256cda432/slvs-3.3-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:7275f7198cfbc78f1d47318978dc0956fc0549b9e4fa5ea0cf51943d2a8a4f05", size = 3012586, upload-time = "2026-10-21T03:21:25.152Z" },
-    { url = "https://files.pythonhosted.org/packages/5e/65/de8c6955f4d9771771f78673c72da6acd92a3889cc66c52626d7a114937b/slvs-3.3-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ea9d8ad10313c480fd3b56bd6838a7f3328d2bb97d5559e4ac9d84d823b74104", size = 3065234, upload-time = "2026-10-21T03:21:27.295Z" },
-    { url = "https://files.pythonhosted.org/packages/95/6e/3b87618863bf7f6b18e2dd290d56798d402b024d98ade136167ff7143709/slvs-3.3-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:3e0e1d533c67fc3ac3e351f5a4329b7bf49f0ad75f5c98e15920018f4e787bec", size = 3948999, upload-time = "2026-10-21T03:21:28.691Z" },
-    { url = "https://files.pythonhosted.org/packages/bf/e8/121633a40fd6ae9f8bfd72414640768f52f29b97cbf5f31bf3811d483a6b/slvs-3.3-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:95eb744a10ac4a20c8cc568d0a9603f70508fd3ed6f392a17ee392da00290b99", size = 4055729, upload-time = "2026-10-21T03:21:30.356Z" },
-    { url = "https://files.pythonhosted.org/packages/2e/71/21da4d0643388a21b0d4f47d38098e18fb675a3d27e88dd76c56b42a18b5/slvs-3.3-cp314-cp314-win32.whl", hash = "sha256:ff483247dc9cfd5baa5e268da6172b8d593f8f626792916e6489fd0d8923ada7", size = 258939, upload-time = "2026-10-21T03:21:31.574Z" },
-    { url = "https://files.pythonhosted.org/packages/08/19/b944b1ca6f18c2c9f42d7154de349906f4ac6279dabf6469f51c50713357/slvs-3.3-cp314-cp314-win_amd64.whl", hash = "sha256:f68aafa72369c66076334bb7ed8c865e53d9d23ec588dd9e9fa6a1dad5bbec28", size = 302013, upload-time = "2026-10-21T03:21:32.535Z" },
 ]
 
 [[package]]

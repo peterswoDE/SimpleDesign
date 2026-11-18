@@ -46,3 +46,5 @@ Jeweils bester von 3 Läufen, immer mit frisch erzeugten Körpern (OCC merkt sic
 5. **slvs funktioniert**, hat aber eine gefährliche Stelle: Ein 2D-Punkt hat 4 Parameter-Einträge, nur die ersten 2 sind gültig. Das Lesen eines Platzhalters (0) **beendet den ganzen Prozess** (Assertion in C++, keine Python-Exception). → Der `SketchSolver`-Wrapper darf slvs-Handles nie nach außen geben.
 6. **OCP 8 API**: `TopoDS.Face(...)` (ohne `_s`), aber `BRep_Tool.Triangulation_s(...)` – uneinheitlich, daher ebenfalls nur in `core/geometry` verwenden.
 7. VTK hat keinen eingebauten „Zoom zum Mauszeiger“ → eigene Umsetzung im Viewport.
+
+> **Nachtrag 18.11.2026:** `slvs` wurde wieder entfernt (GPLv3, siehe PLAN.md Lizenz-Hinweis). Der Skizzen-Solver ist eine Eigenentwicklung.

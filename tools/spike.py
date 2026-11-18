@@ -39,8 +39,6 @@ with timed("Import build123d"):
 with timed("Import pyvista + vtk"):
     import pyvista as pv
     import vtk
-with timed("Import slvs"):
-    import slvs
 
 
 # --------------------------------------------------------------------------- geometry
@@ -165,33 +163,6 @@ picker.Pick(dx, dy, 0, renderer)
 picked_ok = picker.GetActor() is actors[target]
 note("Picking trifft richtiges Teil", picked_ok)
 plotter.close()
-
-# --------------------------------------------------------------------------- sketch solver
-# Rectangle: first point fixed (group 1), rest solved (group 2).
-# Constraints: horizontal/vertical edges, width 600, height 400.
-slvs.clear_sketch()
-g_fixed, g_solve = 1, 2
-wp = slvs.add_base_2d(g_fixed)
-p0 = slvs.add_point_2d(g_fixed, 0, 0, wp)
-p1 = slvs.add_point_2d(g_solve, 500, 10, wp)
-p2 = slvs.add_point_2d(g_solve, 480, 300, wp)
-p3 = slvs.add_point_2d(g_solve, 5, 320, wp)
-lines = [slvs.add_line_2d(g_solve, a, b, wp) for a, b in ((p0, p1), (p1, p2), (p2, p3), (p3, p0))]
-slvs.horizontal(g_solve, lines[0], wp)
-slvs.vertical(g_solve, lines[1], wp)
-slvs.horizontal(g_solve, lines[2], wp)
-slvs.vertical(g_solve, lines[3], wp)
-slvs.distance(g_solve, p0, p1, 600, wp)
-slvs.distance(g_solve, p1, p2, 400, wp)
-with timed("Skizze lösen (Rechteck, 6 Constraints)"):
-    res = slvs.solve_sketch(g_solve, False)
-note(
-    "Solver-Ergebnis / Freiheitsgrade", f"{slvs.ResultFlag(res['result']).name} / dof={res['dof']}"
-)
-# A 2D point only has 2 valid params; the remaining entries are 0 placeholders
-# and reading them aborts the whole process (assertion inside SolveSpace).
-p2_xy = tuple(round(slvs.get_param_value(h), 3) for h in p2["param"][:2])
-note("Punkt 2 (soll 600, 400)", p2_xy)
 
 # --------------------------------------------------------------------------- report
 width = max(len(label) for label, _ in RESULTS)

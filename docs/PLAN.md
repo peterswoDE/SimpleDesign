@@ -1,7 +1,7 @@
 # SimpleDesign – Projektplan
 
 Ein einfaches, parametrisches CAD-Tool für Holzmöbel ("Fusion lite").
-Python-Desktop-Anwendung, Oberfläche zunächst auf Deutsch, vorbereitet für Englisch.
+Python-Desktop-Anwendung, Oberfläche auf Deutsch (Texte zentral gesammelt, Übersetzung später möglich).
 
 ---
 
@@ -28,12 +28,12 @@ Geprüft am 18.11.2026 auf PyPI (alle Pakete aktiv gepflegt, letzte Releases Aug
 
 | Bereich | Wahl (Stand) | Begründung |
 |---|---|---|
-| Sprache | **Python 3.14** | Neueste Version, die *alle* Abhängigkeiten unterstützen. Python 3.15 (Okt. 2026) wird von build123d/OCP und `slvs` noch nicht unterstützt → Umstieg, sobald sie es tun |
+| Sprache | **Python 3.14** | Neueste Version, die *alle* Abhängigkeiten unterstützen. Python 3.15 (Okt. 2026) wird von build123d/OCP noch nicht unterstützt → Umstieg, sobald sie es tun |
 | Paketverwaltung | `uv` + `pyproject.toml` + `uv.lock` | Reproduzierbar; uv installiert Python selbst |
 | GUI | **PySide6** (Qt 6) | Docks/Panels, `QUndoStack`, Übersetzungen (`tr()` / Qt Linguist) |
 | 3D-Ansicht | **pyvista + pyvistaqt** (VTK) | Picking, Kamera, in Qt einbettbar |
 | Geometrie-Kern | **build123d** (OpenCascade/OCP) | Volumenkörper, Boolesche Operationen, STEP/STL, Projektionen für Zeichnungen |
-| Skizzen-Solver | **`slvs`** (offizielle SolveSpace-Python-Bindings) | Gepflegt, Pakete für 3.12–3.14. *Nicht* `python-solvespace` – das hat Windows-Pakete nur bis Python 3.11 |
+| Skizzen-Solver | **eigener Solver** mit numpy (gedämpftes Gauß-Newton, Freiheitsgrade per SVD-Rang) | Keine GPL-Abhängigkeit (`slvs`/SolveSpace ist GPLv3, ausgeschlossen wegen möglicher späterer Lizenzvergabe). numpy ist ohnehin Abhängigkeit (BSD) |
 | Formeln | eigener sicherer Ausdrucks-Parser (eigener Tokenizer + rekursiver Abstieg) | Kein `eval`, gute Fehlermeldungen mit Position |
 | Zuschnitt 2D | eigener Guillotine-Algorithmus (Referenz: `rectpack`) | `rectpack` ist seit Jahren ungepflegt; Guillotine-Schnitte + Faserrichtung + Sägeblattbreite brauchen ohnehin eigene Logik |
 | Zuschnitt 1D | eigener First-Fit-Decreasing | Stangenware (Bauholz, Latten) |
@@ -50,11 +50,11 @@ Ziel: Updates sollen nie zu großen Umbauten führen.
 - Qt: nur aktuelle PySide6-APIs (z. B. `exec()` statt `exec_()`, `QScreen` statt `QDesktopWidget`, Enums voll qualifiziert wie `Qt.AlignmentFlag.AlignLeft`).
 - **Untere Versionsgrenzen** in `pyproject.toml` = jeweils neueste Version beim Start (z. B. `PySide6>=6.12`), konkrete Versionen im `uv.lock`.
 - **Regelmäßiges Update**: zu Beginn jeder Phase `uv lock --upgrade` + `uv python upgrade`, Tests laufen lassen, Warnungen sofort beheben. Kleine, häufige Updates statt seltener großer Sprünge.
-- **Abhängigkeiten kapseln**: Fremdbibliotheken nur in wenigen Modulen benutzen (`core/geometry` für build123d, `core/sketch_solver` für slvs, `ui/viewport` für pyvista). Ändert eine Bibliothek ihre API, ist nur ein Modul betroffen.
+- **Abhängigkeiten kapseln**: Fremdbibliotheken nur in wenigen Modulen benutzen (`core/geometry` für build123d, `core/sketch` für den Solver, `ui/viewport` für pyvista). Ändert eine Bibliothek ihre API, ist nur ein Modul betroffen.
 - Ruff mit Regeln `UP` (pyupgrade) für moderne Python-Syntax.
 
 ### Lizenz-Hinweis
-`slvs` (SolveSpace) steht unter **GPLv3**. Für den Eigengebrauch egal; **wenn das Tool später weitergegeben wird, muss es selbst GPLv3 sein.** Alternative, falls das nicht gewünscht ist: eigener Solver mit scipy (mehr Aufwand). → Entscheidung vor Phase 5, Solver wird hinter einer Schnittstelle (`SketchSolver`) gekapselt, damit er austauschbar bleibt.
+**Entschieden (18.11.2026):** Das Tool soll eventuell später lizenziert/verkauft werden → **keine GPL-/Copyleft-Abhängigkeiten.** `slvs` (SolveSpace, GPLv3) entfällt; der Skizzen-Solver ist eine Eigenentwicklung hinter der Schnittstelle `SketchSolver`. Erlaubt: MIT/BSD/Apache, LGPL nur dynamisch gelinkt (PySide6/Qt). Jede neue Abhängigkeit wird vorher auf ihre Lizenz geprüft.
 
 ---
 
@@ -116,7 +116,7 @@ simpledesign/
 │   │   ├── joint.py         # Verbindungen
 │   │   └── refs.py          # Semantische Flächen-/Kanten-Referenzen
 │   ├── geometry/            # build123d-Körper aus dem Modell, Cache
-│   ├── sketch_solver/       # Schnittstelle + slvs-Implementierung
+│   ├── sketch_solver/       # Schnittstelle + eigener numpy-Solver
 │   ├── templates/           # Vorlagen-Format + eingebaute Vorlagen
 │   ├── cutlist/             # Zuschnittliste + Optimierung 1D/2D
 │   ├── drawing/             # Ansichten, Bemaßung, DXF/PDF
@@ -192,10 +192,9 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 ### Phase 0 – Projektgerüst & Technik-Prüfung
 - `pyproject.toml`, uv mit Python 3.14, ruff, mypy, pytest – alles in der neuesten Version, Deprecation-Warnungen als Fehler.
 - **Technik-Prüfung (Spike)** – bevor wir uns festlegen:
-  - build123d, pyvistaqt, PySide6, `slvs` gemeinsam installieren.
+  - build123d, pyvistaqt, PySide6 gemeinsam installieren.
   - 50 Quader per build123d erzeugen, tessellieren, in pyvista anzeigen → Zeit messen.
   - Ein Teil per Mausklick auswählen (Picking).
-  - Einfache Skizze mit `slvs` lösen.
 - Leeres Hauptfenster mit Viewport, Docks, Menü, i18n-Infrastruktur.
 - **Fertig, wenn**: App startet, zeigt Gitter + Achsen, Spike-Messwerte sind dokumentiert, Tests laufen.
 
@@ -242,12 +241,12 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 - Nach dem Einfügen frei weiterbearbeitbar; Vorlagen-Parameter steuern weiter.
 
 ### Phase 5 – Skizzen + Extrusion
-- Vorher: Entscheidung GPL/`slvs` vs. eigener Solver (siehe Lizenz-Hinweis).
+- Eigener Solver (siehe Lizenz-Hinweis), austauschbar hinter `SketchSolver`.
 - Skizzenmodus auf Hauptebene oder Teilefläche (semantische Referenz).
 - Elemente: Linie, Rechteck, Kreis, Bogen; später Spline.
 - Constraints: horizontal, vertikal, parallel, rechtwinklig, tangential, koinzident, gleich, Bemaßung (mit Formeln).
 - Solver-Status anzeigen (unter-/vollständig/überbestimmt), bei Nicht-Lösbarkeit letzten gültigen Zustand behalten.
-- Extrudieren als neues Teil (mit Material + Faserrichtung) oder als Ausschnitt aus bestehendem Teil.
+- Extrudieren als neues Teil (mit Material + Faserrichtung) oder als Ausschnitt aus bestehendem Teil (deckt auch Taschen/Fräsungen ab, die in Phase 3 offen blieben).
 - Extrusionsteile in der Zuschnittliste mit **Hüllmaß** in ihrem lokalen System (Rohmaß zum Aussägen).
 
 ### Phase 6 – Technische Zeichnung
@@ -256,10 +255,18 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 - Einzelteilzeichnungen mit Bohrungen/Fräsungen.
 - A4/A3, Schriftfeld; Export PDF + DXF.
 
-### Phase 7 – Englisch & Feinschliff
-- Englische Übersetzung, Sprachumschaltung.
+### Phase 7 – Einstellungen & Auslieferung
+- Englische Übersetzung entfällt vorerst (Texte bleiben zentral in `ui/texts.py`).
 - Einstellungen, Tastenkürzel, freie Rotationswinkel, Performance.
 - Installer (PyInstaller/Briefcase) – OCC/VTK sind groß, Paketgröße früh testen.
+
+### Phase 8 – Feinschliff
+Nur Politur, keine neuen Großfunktionen.
+- **Bedienung reparieren**: Maus-/Kamerasteuerung (Drehen, Verschieben, Zoom auf Cursor), Auswahl, Gizmo und Einrasten zuverlässig machen; jede Interaktion mit Test bzw. klarem Verhalten.
+- **Drag & Drop**: Vorlagen/Möbel aus einer Bibliothek in die 3D-Ansicht ziehen, Teile im Baum per Drag & Drop umgruppieren, Teile in der Ansicht ziehen.
+- **Vordefinierte Möbel**: Vorlagenbibliothek mit Vorschaubildern (Regal, Schrank, Kommode, Tisch, Bank, Nachttisch, Schreibtisch …).
+- Fehlende Werkzeuge ergänzen (Spiegeln, Ausrichten, Anordnen, Messen), Kontextmenüs, Statuszeilen-Hinweise.
+- Konsistente Dialoge, Fehlermeldungen, Symbole.
 
 ---
 
@@ -283,7 +290,7 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 | Formeln brechen durch Umbenennen/Löschen | Interne IDs, Warnung + Einfrieren beim Löschen |
 | Topologische Referenzen (Flächen ändern sich) | Semantische Referenzen statt OCC-Flächen-IDs |
 | Zuschnittliste falsch durch Verbindungen | Verbindungen geben Zugaben explizit an; Regressionstests mit Beispielmöbeln |
-| GPL-Pflicht durch `slvs` | Solver hinter Schnittstelle, Entscheidung vor Phase 5 |
+| Eigener Skizzen-Solver konvergiert schlecht | Gedämpftes Verfahren, Start vom letzten gültigen Zustand, Tests mit typischen Skizzen; Solver austauschbar |
 | Umfang wächst schnell | Strikte Phasen, jede für sich nutzbar |
 
 ---
@@ -294,4 +301,4 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 - Welche Schnittmaschine (Formatkreissäge, Tauchsäge, Baumarkt-Zuschnitt) → Optimierungsregeln – vor Phase 2.
 - Kantenumleimer/Furnierkanten in der Zuschnittliste (Maßabzug?) – vor Phase 2.
 - Rundungen/Fasen an Kanten – frühestens Phase 5.
-- Soll das Tool je weitergegeben werden (Lizenzfrage)? – vor Phase 5.
+- ~~Soll das Tool je weitergegeben werden (Lizenzfrage)?~~ – geklärt: evtl. Verkauf → keine GPL-Abhängigkeiten.
