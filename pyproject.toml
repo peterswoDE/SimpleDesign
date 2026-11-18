@@ -40,6 +40,8 @@ src = ["src", "tests", "tools"]
 [tool.ruff.lint]
 # UP = pyupgrade: always use current Python syntax (plan section 2a)
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "N", "PTH"]
+# German UI texts use typographic dash and multiplication sign on purpose
+allowed-confusables = ["–", "×"]
 
 [tool.ruff.lint.per-file-ignores]
 # VTK/Qt callbacks follow their libraries' camelCase naming

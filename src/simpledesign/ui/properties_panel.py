@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
     QLabel,
     QLineEdit,
+    QPushButton,
     QScrollArea,
     QStackedWidget,
     QVBoxLayout,
@@ -16,7 +18,6 @@ from PySide6.QtWidgets import (
 )
 
 from simpledesign.app.controller import Controller
-from simpledesign.core.materials.library import BUILTIN_MATERIALS
 from simpledesign.core.model.part import DIMENSIONS, PATTERN, POSITION, Axis, Orientation
 from simpledesign.core.params.errors import FormulaError
 from simpledesign.ui.expression_field import ExpressionField
@@ -43,6 +44,7 @@ class PropertiesPanel(QScrollArea):
 
         controller.document_changed.connect(self.refresh)
         controller.selection_changed.connect(self.refresh)
+        controller.library_changed.connect(self.refresh)
         self.refresh()
 
     # ------------------------------------------------------------------ pages
@@ -56,10 +58,25 @@ class PropertiesPanel(QScrollArea):
         self.board_name.editingFinished.connect(self._on_board_name)
         form.addRow(self.tr("Name"), self.board_name)
         self.material_combo = QComboBox()
-        for material in BUILTIN_MATERIALS:
-            self.material_combo.addItem(material.name, material.id)
         self.material_combo.activated.connect(self._on_material)
         form.addRow(self.tr("Material"), self.material_combo)
+        # Shown when the library version of the material was changed later.
+        self.material_hint = QWidget()
+        hint_layout = QVBoxLayout(self.material_hint)
+        hint_layout.setContentsMargins(0, 0, 0, 0)
+        hint_label = QLabel(self.tr("Die Bibliothek enthält eine geänderte Fassung."))
+        hint_label.setWordWrap(True)
+        self.material_update_button = QPushButton(self.tr("Aus Bibliothek aktualisieren"))
+        self.material_update_button.clicked.connect(self._on_update_material)
+        hint_layout.addWidget(hint_label)
+        hint_layout.addWidget(self.material_update_button)
+        form.addRow("", self.material_hint)
+        self.ignore_grain_check = QCheckBox(self.tr("Faserrichtung ignorieren"))
+        self.ignore_grain_check.setToolTip(
+            self.tr("Das Teil darf im Zuschnitt gedreht werden (z. B. bei verdeckten Teilen).")
+        )
+        self.ignore_grain_check.clicked.connect(self._on_ignore_grain)
+        form.addRow("", self.ignore_grain_check)
         self.orientation_combo = QComboBox()
         for orientation in Orientation:
             self.orientation_combo.addItem(orientation_label(orientation), orientation.value)
@@ -116,7 +133,14 @@ class PropertiesPanel(QScrollArea):
                 self.stack.setCurrentWidget(self.board_page)
                 self.board_name.setText(board.name)
                 self.board_name.setStyleSheet("")
+                self._fill_materials()
                 self.material_combo.setCurrentIndex(self.material_combo.findData(board.material_id))
+                self.material_hint.setVisible(
+                    board.material_id in self.controller.outdated_materials()
+                )
+                material = doc.materials[board.material_id]
+                self.ignore_grain_check.setEnabled(material.has_grain)
+                self.ignore_grain_check.setChecked(board.ignore_grain or not material.has_grain)
                 index = self.orientation_combo.findData(board.orientation.value)
                 self.orientation_combo.setCurrentIndex(index)
                 axis_index = self.pattern_axis_combo.findData(board.pattern_axis.value)
@@ -142,6 +166,18 @@ class PropertiesPanel(QScrollArea):
                 self.stack.setCurrentWidget(self.empty_label)
         finally:
             self._updating = False
+
+    def _fill_materials(self) -> None:
+        """Library materials, then materials only this document has."""
+        combo = self.material_combo
+        combo.clear()
+        for material in self.controller.library:
+            combo.addItem(material.name, material.id)
+        for material in self.controller.doc.materials.values():
+            if material.id not in self.controller.library:
+                combo.addItem(
+                    self.tr("{name} (nur im Dokument)").format(name=material.name), material.id
+                )
 
     # ------------------------------------------------------------------ edits
     def _on_expression(self, prop: str, text: str) -> None:
@@ -175,6 +211,14 @@ class PropertiesPanel(QScrollArea):
     def _on_material(self, index: int) -> None:
         if (board_id := self._single()) is not None:
             self.controller.set_material([board_id], str(self.material_combo.itemData(index)))
+
+    def _on_update_material(self) -> None:
+        if (board_id := self._single()) is not None:
+            self.controller.update_materials([self.controller.doc.boards[board_id].material_id])
+
+    def _on_ignore_grain(self, checked: bool) -> None:
+        if (board_id := self._single()) is not None:
+            self.controller.set_ignore_grain([board_id], checked)
 
     def _on_orientation(self, index: int) -> None:
         if (board_id := self._single()) is not None:

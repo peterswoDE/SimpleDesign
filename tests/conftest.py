@@ -4,7 +4,7 @@ from collections.abc import Iterator
 
 import pytest
 from PySide6.QtCore import QSettings, QStandardPaths
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QColorDialog, QFileDialog, QMessageBox
 
 
 @pytest.fixture(autouse=True)
@@ -29,3 +29,4 @@ def no_modal_dialogs(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(QMessageBox, name, staticmethod(refuse))
     for name in ("getOpenFileName", "getSaveFileName"):
         monkeypatch.setattr(QFileDialog, name, staticmethod(refuse))
+    monkeypatch.setattr(QColorDialog, "getColor", staticmethod(refuse))

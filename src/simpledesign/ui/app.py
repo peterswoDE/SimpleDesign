@@ -35,6 +35,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     configure_application(app)
     window = MainWindow()
     window.show()
+    window.show_library_error()
     window.offer_recovery()
     files = [Path(a) for a in args[1:] if a.lower().endswith(sdz.FILE_SUFFIX)]
     if files:

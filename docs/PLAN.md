@@ -220,6 +220,8 @@ Jede Phase endet mit einer nutzbaren Version, Tests und einem Beispielmöbel.
 - Materialbedarf + optional Kosten.
 - Export: STEP, STL, OBJ.
 
+> **Stand Phase 2 (umgesetzt):** Materialbibliothek als `materials.json` im Benutzerverzeichnis; das Dokument behält eine eigene Kopie jedes Materials und fragt nach Bibliotheksänderungen, ob es aktualisieren soll. Schnittplan-Dock mit Bedarf, Kosten und PDF-Export. STEP wird direkt über OCP (XCAF, mit Teilenamen) geschrieben, build123d ist dafür nicht nötig.
+
 ### Phase 3 – Holzverbindungen
 *(vor die Vorlagen gezogen, damit Vorlagen gleich mit Verbindungen gebaut werden – z. B. Rückwand in Nut)*
 - Grundprinzip: Eine Verbindung hat ein **Hauptteil** und ein **Anschlussteil**. Sie darf

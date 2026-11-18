@@ -21,9 +21,11 @@ from PySide6.QtCore import QObject, QStandardPaths, QTimer, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from simpledesign.core.io import sdz
+from simpledesign.core.materials.library import LibraryError, MaterialLibrary
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.part import Axis, Orientation
+from simpledesign.core.model.settings import CutSettings
 from simpledesign.core.params.errors import ErrorCode
 from simpledesign.core.params.expression import format_number
 
@@ -31,6 +33,7 @@ T = TypeVar("T")
 
 AUTOSAVE_INTERVAL_MS = 120_000
 RECOVERY_FILE = "recovery.sdz"
+LIBRARY_FILE = "materials.json"
 _MERGE_COMMAND_ID = 1
 
 
@@ -79,8 +82,14 @@ class Controller(QObject):
     document_changed = Signal()
     selection_changed = Signal()
     file_state_changed = Signal()
+    library_changed = Signal()
 
-    def __init__(self, parent: QObject | None = None, recovery_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        recovery_dir: Path | None = None,
+        library_path: Path | None = None,
+    ) -> None:
         super().__init__(parent)
         self.undo_stack = QUndoStack(self)
         self.undo_stack.cleanChanged.connect(self.file_state_changed)
@@ -90,6 +99,16 @@ class Controller(QObject):
         self.selection: list[str] = []
         self.file_path: Path | None = None
         self.recovery_path = (recovery_dir or default_recovery_dir()) / RECOVERY_FILE
+
+        # The user's material library (shared by all documents). A broken file
+        # is not overwritten until the user saves the library again.
+        self.library_path = library_path or default_recovery_dir() / LIBRARY_FILE
+        self.library_error: str | None = None
+        try:
+            self.library = MaterialLibrary.load(self.library_path)
+        except LibraryError as error:
+            self.library = MaterialLibrary()
+            self.library_error = str(error)
 
         self.autosave_timer = QTimer(self)
         self.autosave_timer.setInterval(AUTOSAVE_INTERVAL_MS)
@@ -155,7 +174,8 @@ class Controller(QObject):
 
     def add_board(self, group_id: str | None = None) -> str:
         board_id = self.execute(
-            self.tr("Brett hinzufügen"), lambda d: d.add_board(group_id=group_id).id
+            self.tr("Brett hinzufügen"),
+            lambda d: d.add_board(group_id=group_id, material_id=self.library.default()).id,
         )
         self.set_selection([board_id])
         return board_id
@@ -181,13 +201,61 @@ class Controller(QObject):
         return self.execute(self.tr("Parameter hinzufügen"), change)
 
     def set_material(self, board_ids: Iterable[str], material_id: str) -> None:
+        """Assign a material from the library (or one only the document has)."""
         ids = list(board_ids)
+        material = self.library.get(material_id) or material_id
 
         def change(d: Document) -> None:
             for board_id in ids:
-                d.set_material(board_id, material_id)
+                d.set_material(board_id, material)
 
         self.execute(self.tr("Material ändern"), change)
+
+    def set_ignore_grain(self, board_ids: Iterable[str], ignore: bool) -> None:
+        ids = [i for i in board_ids if i in self.doc.boards]
+
+        def change(d: Document) -> None:
+            for board_id in ids:
+                d.boards[board_id].ignore_grain = ignore
+
+        self.execute(self.tr("Faserrichtung ändern"), change)
+
+    def set_cut_settings(self, settings: CutSettings) -> None:
+        def change(d: Document) -> None:
+            d.cut_settings = settings
+
+        self.execute(self.tr("Zuschnitt-Einstellungen ändern"), change, merge_key="cut_settings")
+
+    # ================================================================== library
+    def set_library(self, library: MaterialLibrary) -> None:
+        """Store a new library. Raises OSError if it cannot be saved."""
+        library.save(self.library_path)
+        self.library = library
+        self.library_error = None
+        self.library_changed.emit()
+
+    def outdated_materials(self) -> list[str]:
+        """Document materials whose library version differs from the document copy."""
+        return [
+            material_id
+            for material_id, material in self.doc.materials.items()
+            if (library_version := self.library.get(material_id)) is not None
+            and library_version != material
+        ]
+
+    def update_materials(self, material_ids: Iterable[str]) -> None:
+        """Replace the document copies by the current library versions."""
+        materials = [
+            m
+            for i in material_ids
+            if (m := self.library.get(i)) is not None and i in self.doc.materials
+        ]
+
+        def change(d: Document) -> None:
+            for material in materials:
+                d.update_material(material)
+
+        self.execute(self.tr("Material aktualisieren"), change)
 
     def set_orientation(self, board_id: str, orientation: Orientation) -> None:
         def change(d: Document) -> None:

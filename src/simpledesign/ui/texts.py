@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QCoreApplication, QLocale
 
+from simpledesign.core.materials.material import MaterialKind
 from simpledesign.core.model.part import Axis, Orientation
 from simpledesign.core.params.errors import ErrorCode, FormulaError
 from simpledesign.core.params.expression import format_number
@@ -71,3 +72,20 @@ def property_label(prop: str) -> str:
         "spacing": _tr("Abstand"),
     }
     return labels[prop]
+
+
+def material_kind_label(kind: MaterialKind) -> str:
+    labels = {
+        MaterialKind.PANEL: _tr("Plattenware"),
+        MaterialKind.SOLID: _tr("Massivholz (Bretter/Bohlen)"),
+        MaterialKind.TIMBER: _tr("Kantholz/Latten (Stangenware)"),
+    }
+    return labels[kind]
+
+
+def percent(value: float) -> str:
+    return QLocale().toString(value * 100, "f", 0) + " %"
+
+
+def money(value: float) -> str:
+    return QLocale().toString(value, "f", 2) + " €"

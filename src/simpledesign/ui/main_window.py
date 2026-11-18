@@ -18,7 +18,10 @@ from PySide6.QtWidgets import (
 from simpledesign import __version__
 from simpledesign.app.controller import Controller
 from simpledesign.core.io import sdz
+from simpledesign.core.io.export import ExportError, export
 from simpledesign.ui.cutlist_panel import CutlistPanel
+from simpledesign.ui.cutplan_panel import CutplanPanel
+from simpledesign.ui.materials_dialog import MaterialsDialog
 from simpledesign.ui.parameters_panel import ParametersPanel
 from simpledesign.ui.properties_panel import PropertiesPanel
 from simpledesign.ui.scene import Scene
@@ -68,7 +71,12 @@ class MainWindow(QMainWindow):
         self.cutlist_dock = self._add_dock(
             "cutlist", self.tr("Zuschnittliste"), self.cutlist_panel, bottom
         )
+        self.cutplan_panel = CutplanPanel(self.controller)
+        self.cutplan_dock = self._add_dock(
+            "cutplan", self.tr("Schnittplan"), self.cutplan_panel, bottom
+        )
         self.tabifyDockWidget(self.parameters_dock, self.cutlist_dock)
+        self.tabifyDockWidget(self.cutlist_dock, self.cutplan_dock)
         self.parameters_dock.raise_()
 
     def _add_dock(
@@ -97,6 +105,12 @@ class MainWindow(QMainWindow):
         self.action_save_as = QAction(self.tr("Speichern &unter…"), self)
         self.action_save_as.setShortcut(QKeySequence.StandardKey.SaveAs)
         self.action_save_as.triggered.connect(self.save_document_as)
+
+        self.action_export = QAction(self.tr("3D-Modell &exportieren…"), self)
+        self.action_export.setToolTip(self.tr("Als STEP, STL oder OBJ exportieren"))
+        self.action_export.triggered.connect(self.export_model)
+        self.action_materials = QAction(self.tr("&Materialbibliothek…"), self)
+        self.action_materials.triggered.connect(self.edit_materials)
 
         self.action_quit = QAction(self.tr("&Beenden"), self)
         self.action_quit.setShortcut(QKeySequence.StandardKey.Quit)
@@ -155,6 +169,7 @@ class MainWindow(QMainWindow):
             [self.action_new, self.action_open, self.action_save, self.action_save_as]
         )
         file_menu.addSeparator()
+        file_menu.addAction(self.action_export)
         file_menu.addAction(self.cutlist_panel.export_action)
         file_menu.addSeparator()
         file_menu.addAction(self.action_quit)
@@ -184,8 +199,12 @@ class MainWindow(QMainWindow):
             self.properties_dock,
             self.parameters_dock,
             self.cutlist_dock,
+            self.cutplan_dock,
         ):
             view_menu.addAction(dock.toggleViewAction())
+
+        extras_menu = menu_bar.addMenu(self.tr("E&xtras"))
+        extras_menu.addAction(self.action_materials)
 
         help_menu = menu_bar.addMenu(self.tr("&Hilfe"))
         help_menu.addAction(self.action_about)
@@ -326,6 +345,82 @@ class MainWindow(QMainWindow):
         QSettings().setValue("files/last_dir", str(path.parent))
         self.statusBar().showMessage(self.tr("Gespeichert: {path}").format(path=path), 4000)
         return True
+
+    def export_model(self) -> None:
+        file_path = self.controller.file_path
+        untitled = Path(self.tr("Unbenannt") + ".step")
+        start = file_path.with_suffix(".step") if file_path else untitled
+        filters = ";;".join(
+            (
+                self.tr("STEP (*.step *.stp)"),
+                self.tr("STL (*.stl)"),
+                self.tr("OBJ (*.obj)"),
+            )
+        )
+        path, _filter = QFileDialog.getSaveFileName(
+            self, self.tr("3D-Modell exportieren"), str(start), filters
+        )
+        if path:
+            self.export_to(Path(path))
+
+    def export_to(self, path: Path) -> bool:
+        try:
+            export(self.controller.doc, self.controller.evaluation, path)
+        except (OSError, ExportError) as error:
+            QMessageBox.critical(
+                self,
+                self.tr("Export"),
+                self.tr("Der Export ist fehlgeschlagen:\n{error}").format(error=error),
+            )
+            return False
+        self.statusBar().showMessage(self.tr("Exportiert: {path}").format(path=path), 4000)
+        return True
+
+    # ------------------------------------------------------------------ materials
+    def edit_materials(self) -> None:
+        dialog = MaterialsDialog(self.controller.library, self)
+        if dialog.exec() == MaterialsDialog.DialogCode.Accepted:
+            self.apply_library(dialog)
+
+    def apply_library(self, dialog: MaterialsDialog) -> None:
+        """Store the edited library; offer to update the document's copies."""
+        try:
+            self.controller.set_library(dialog.library())
+        except OSError as error:
+            QMessageBox.critical(
+                self,
+                self.tr("Materialbibliothek"),
+                self.tr("Die Bibliothek konnte nicht gespeichert werden:\n{error}").format(
+                    error=error
+                ),
+            )
+            return
+        outdated = self.controller.outdated_materials()
+        if not outdated:
+            return
+        names = "\n".join(f"• {self.controller.doc.materials[i].name}" for i in outdated)
+        answer = QMessageBox.question(
+            self,
+            self.tr("Materialbibliothek"),
+            self.tr(
+                "Diese Materialien des Dokuments wurden in der Bibliothek geändert:\n{names}\n\n"
+                "Sollen sie im Dokument aktualisiert werden?"
+            ).format(names=names),
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.controller.update_materials(outdated)
+
+    def show_library_error(self) -> None:
+        """At start: the library file was broken, the built-ins are used."""
+        if self.controller.library_error:
+            QMessageBox.warning(
+                self,
+                self.tr("Materialbibliothek"),
+                self.tr(
+                    "Die Materialbibliothek konnte nicht gelesen werden; es werden die "
+                    "Standardmaterialien verwendet.\n{error}"
+                ).format(error=self.controller.library_error),
+            )
 
     def offer_recovery(self) -> None:
         """After a crash: offer the autosaved state."""
