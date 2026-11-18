@@ -1,0 +1,178 @@
+{
+ "format_version": 1,
+ "parameters": [
+  {
+   "id": "3ab0a2f36d114f1abd8884891c2b69d0",
+   "name": "H",
+   "expression": "1800",
+   "group_id": null
+  },
+  {
+   "id": "dde1fbf54cbf4fcb933619b141fa342b",
+   "name": "B",
+   "expression": "800",
+   "group_id": null
+  },
+  {
+   "id": "663000e9e3e6492682826996acfe5d3b",
+   "name": "T",
+   "expression": "400",
+   "group_id": null
+  },
+  {
+   "id": "b250242c51764aa5a49b099194238188",
+   "name": "t",
+   "expression": "18",
+   "group_id": null
+  },
+  {
+   "id": "f46b8765f894420f9db7fda20bba1110",
+   "name": "n",
+   "expression": "4",
+   "group_id": null
+  }
+ ],
+ "groups": [],
+ "boards": [
+  {
+   "id": "b94fafb100a54f76af29c27fe1868438",
+   "name": "Seite_links",
+   "material_id": "builtin.multiplex_birke_18",
+   "group_id": null,
+   "orientation": "zy",
+   "expressions": {
+    "length": "@3ab0a2f36d114f1abd8884891c2b69d0",
+    "width": "@663000e9e3e6492682826996acfe5d3b",
+    "thickness": "@b250242c51764aa5a49b099194238188",
+    "x": "0",
+    "y": "0",
+    "z": "0",
+    "count": "1",
+    "spacing": "0"
+   },
+   "pattern_axis": "z",
+   "visible": true,
+   "transparent": false
+  },
+  {
+   "id": "50936785f83a4ca8a30d11593ec392f5",
+   "name": "Seite_rechts",
+   "material_id": "builtin.multiplex_birke_18",
+   "group_id": null,
+   "orientation": "zy",
+   "expressions": {
+    "length": "@3ab0a2f36d114f1abd8884891c2b69d0",
+    "width": "@663000e9e3e6492682826996acfe5d3b",
+    "thickness": "@b250242c51764aa5a49b099194238188",
+    "x": "@dde1fbf54cbf4fcb933619b141fa342b - @50936785f83a4ca8a30d11593ec392f5.thickness",
+    "y": "0",
+    "z": "0",
+    "count": "1",
+    "spacing": "0"
+   },
+   "pattern_axis": "z",
+   "visible": true,
+   "transparent": false
+  },
+  {
+   "id": "de237b85a4c6493580cbccebf6ee1c88",
+   "name": "Boden",
+   "material_id": "builtin.multiplex_birke_18",
+   "group_id": null,
+   "orientation": "xy",
+   "expressions": {
+    "length": "@dde1fbf54cbf4fcb933619b141fa342b - 2*@b250242c51764aa5a49b099194238188",
+    "width": "@663000e9e3e6492682826996acfe5d3b",
+    "thickness": "@b250242c51764aa5a49b099194238188",
+    "x": "@b94fafb100a54f76af29c27fe1868438.x2",
+    "y": "0",
+    "z": "0",
+    "count": "1",
+    "spacing": "0"
+   },
+   "pattern_axis": "z",
+   "visible": true,
+   "transparent": false
+  },
+  {
+   "id": "180a97b3461646a495990aad90275e48",
+   "name": "Deckel",
+   "material_id": "builtin.multiplex_birke_18",
+   "group_id": null,
+   "orientation": "xy",
+   "expressions": {
+    "length": "@dde1fbf54cbf4fcb933619b141fa342b - 2*@b250242c51764aa5a49b099194238188",
+    "width": "@663000e9e3e6492682826996acfe5d3b",
+    "thickness": "@b250242c51764aa5a49b099194238188",
+    "x": "@b94fafb100a54f76af29c27fe1868438.x2",
+    "y": "0",
+    "z": "@3ab0a2f36d114f1abd8884891c2b69d0 - @b250242c51764aa5a49b099194238188",
+    "count": "1",
+    "spacing": "0"
+   },
+   "pattern_axis": "z",
+   "visible": true,
+   "transparent": false
+  },
+  {
+   "id": "04b734f670904907a38bf46761259553",
+   "name": "Fachboden",
+   "material_id": "builtin.multiplex_birke_18",
+   "group_id": null,
+   "orientation": "xy",
+   "expressions": {
+    "length": "@dde1fbf54cbf4fcb933619b141fa342b - 2*@b250242c51764aa5a49b099194238188",
+    "width": "@663000e9e3e6492682826996acfe5d3b - 20",
+    "thickness": "@b250242c51764aa5a49b099194238188",
+    "x": "@b250242c51764aa5a49b099194238188",
+    "y": "0",
+    "z": "@de237b85a4c6493580cbccebf6ee1c88.z2 + @04b734f670904907a38bf46761259553.spacing - @b250242c51764aa5a49b099194238188",
+    "count": "@f46b8765f894420f9db7fda20bba1110",
+    "spacing": "(@3ab0a2f36d114f1abd8884891c2b69d0 - 2*@b250242c51764aa5a49b099194238188 - @f46b8765f894420f9db7fda20bba1110*@b250242c51764aa5a49b099194238188) / (@f46b8765f894420f9db7fda20bba1110 + 1) + @b250242c51764aa5a49b099194238188"
+   },
+   "pattern_axis": "z",
+   "visible": true,
+   "transparent": false
+  },
+  {
+   "id": "693952c48022491885d0861bc95343df",
+   "name": "Rückwand",
+   "material_id": "builtin.hdf_3",
+   "group_id": null,
+   "orientation": "xz",
+   "expressions": {
+    "length": "@dde1fbf54cbf4fcb933619b141fa342b",
+    "width": "@3ab0a2f36d114f1abd8884891c2b69d0",
+    "thickness": "3",
+    "x": "0",
+    "y": "@663000e9e3e6492682826996acfe5d3b",
+    "z": "0",
+    "count": "1",
+    "spacing": "0"
+   },
+   "pattern_axis": "z",
+   "visible": true,
+   "transparent": false
+  }
+ ],
+ "materials": [
+  {
+   "id": "builtin.multiplex_birke_18",
+   "name": "Multiplex Birke 18 mm",
+   "kind": "panel",
+   "thickness": 18,
+   "width": null,
+   "has_grain": true,
+   "color": "#e3c99a"
+  },
+  {
+   "id": "builtin.hdf_3",
+   "name": "HDF 3 mm",
+   "kind": "panel",
+   "thickness": 3,
+   "width": null,
+   "has_grain": false,
+   "color": "#8f7258"
+  }
+ ]
+}
