@@ -1,0 +1,76 @@
+[project]
+name = "simpledesign"
+version = "0.1.0"
+description = "Einfaches parametrisches CAD-Tool für Holzmöbel"
+authors = [
+    { name = "Wolfram Petersen", email = "wolfram.petersen@outlook.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "build123d>=0.13.0",
+    "pyside6>=6.12.0",
+    "pyvista>=0.49.2",
+    "pyvistaqt>=0.13.2",
+    "slvs>=3.3",
+    "vtk>=9.7.2",
+]
+
+[project.gui-scripts]
+simpledesign = "simpledesign:main"
+
+[build-system]
+requires = ["uv_build>=0.13.9,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "pytest-qt>=4.5.0",
+    "ruff>=0.17.5",
+]
+
+# --------------------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+# UP = pyupgrade: always use current Python syntax (plan section 2a)
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "N", "PTH"]
+
+[tool.ruff.lint.per-file-ignores]
+# VTK/Qt callbacks follow their libraries' camelCase naming
+"src/simpledesign/ui/*" = ["N802"]
+
+# --------------------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# Libraries without (complete) type information
+module = ["pyvista.*", "pyvistaqt.*", "vtk.*", "vtkmodules.*", "build123d.*", "OCP.*", "slvs.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The UI subclasses untyped VTK/pyvista classes
+module = ["simpledesign.ui.*"]
+disallow_subclassing_any = false
+
+# --------------------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
+addopts = "-ra"
+# Plan section 2a: using a deprecated API is a test failure.
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+    "error::FutureWarning",
+    # pyvista's own warning classes do NOT inherit from DeprecationWarning.
+    "error::pyvista.PyVistaDeprecationWarning",
+    "error::pyvista.PyVistaFutureWarning",
+]
