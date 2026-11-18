@@ -276,6 +276,8 @@ Nur Politur, keine neuen Großfunktionen.
 - Fehlende Werkzeuge ergänzen (Spiegeln, Ausrichten, Anordnen, Messen), Kontextmenüs, Statuszeilen-Hinweise.
 - Konsistente Dialoge, Fehlermeldungen, Symbole.
 
+> **Stand Phase 8 (umgesetzt):** Steuerung neu: Drehen mit mittlerer Maustaste (Drehteller um den Punkt unter dem Cursor, Z bleibt oben), Verschieben mit Umschalt+Mitte, Zoom auf den Cursor; Linksklick wählt, Ziehen eines Teils verschiebt es auf der Bodenebene (Esc bricht ab, ein Rückgängig-Schritt), Gizmo-Pfeile werden im Bildschirmraum gepickt und bewegen auch Gruppen. Rechtsklick öffnet ein Kontextmenü (Teilaktionen, Anordnen, Brett/Vorlage einfügen, Ansichten), Bedienhinweis in der Statuszeile. Möbelbibliothek als Dock mit Vorschaubildern; 11 eingebaute Möbel (u. a. Kommode, Nachttisch, Hängeschrank, Sideboard, Schreibtisch, Couchtisch, Bett) plus eigene Vorlagen; per Doppelklick oder Drag & Drop in die 3D-Ansicht (landet auf dem Boden unter dem Cursor, 10-mm-Raster). Teile im Baum per Drag & Drop umgruppieren. Menü „Anordnen“: am zuerst gewählten Teil ausrichten (je Achse bündig/mittig) und gleichmäßig verteilen. Messen: Statuszeile zeigt Größe der Auswahl und bei zwei Teilen den lichten Abstand je Achse. Dialoge sind nicht-modal. Spiegeln entfällt bewusst (kollidiert mit Positionsformeln; symmetrische Teile über Formeln/Muster).
+
 ---
 
 ## 7. Qualität & Arbeitsweise
