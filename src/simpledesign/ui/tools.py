@@ -19,6 +19,8 @@ from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 from simpledesign.app.snapping import Vec3
 from simpledesign.core.materials.library import builtin_material
 from simpledesign.core.model import fit, front
+from simpledesign.core.model.fitting import Fitting, FittingKind
+from simpledesign.core.model.machining import fitting_holes
 from simpledesign.ui.texts import number
 
 if TYPE_CHECKING:
@@ -321,7 +323,12 @@ class FrontTool(Tool):
         overlay = s.mounting == front.Mounting.OVERLAY
         mounting = _tr("aufliegend") if overlay else _tr("einliegend")
         if self.kind == front.FrontKind.DOOR:
-            leaves = _tr("zweiflügelig") if s.leaves == 2 else _tr("einflügelig")
+            if s.leaves == 2:
+                leaves = _tr("zweiflügelig")
+            elif s.hinge_right:
+                leaves = _tr("einflügelig, Anschlag rechts")
+            else:
+                leaves = _tr("einflügelig, Anschlag links")
             span = _tr("ganzes Möbel") if s.whole else _tr("Fach")
             what = f"{mounting}, {leaves}, {span}"
         else:
@@ -331,7 +338,7 @@ class FrontTool(Tool):
     def _status(self, plan: front.FrontPlan | None) -> None:
         if self.kind == front.FrontKind.DOOR:
             name = _tr("Tür")
-            keys = _tr("L: auf-/einliegend, 1/2: Flügel, G: ganzes Möbel/Fach")
+            keys = _tr("L: auf-/einliegend, 1/2: Flügel, A: Anschlag, G: ganzes Möbel/Fach")
         else:
             name = _tr("Schublade")
             keys = _tr("L: auf-/einliegend, 1–9: Anzahl")
@@ -364,6 +371,8 @@ class FrontTool(Tool):
             s.mounting = front.Mounting.INSET if overlay else front.Mounting.OVERLAY
         elif key == Qt.Key.Key_G and door:
             s.whole = not s.whole
+        elif key == Qt.Key.Key_A and door:
+            s.hinge_right = not s.hinge_right
         elif text and text in "12" and door:
             s.leaves = int(text)
         elif text and text in "123456789" and not door:
@@ -376,6 +385,98 @@ class FrontTool(Tool):
 
 def scene_shift(scene: Scene) -> bool:
     return bool(scene.viewport.iren.interactor.GetShiftKey())
+
+
+class ShelfPinTool(Tool):
+    """Point at the inner face of a side: a row of shelf pin holes (preview);
+    a click adds it."""
+
+    def __init__(self, scene: Scene) -> None:
+        super().__init__(scene)
+        self.target: tuple[str, int] | None = None  # board, face side
+        self.holes = 0
+        self.preview = _box_actor()
+
+    def start(self) -> None:
+        self.scene.renderer.AddActor(self.preview)
+        self._show(None)
+
+    def finish(self) -> None:
+        self.scene.renderer.RemoveActor(self.preview)
+        self.scene.viewport.render()
+
+    def target_at(self, x: int, y: int) -> tuple[str, int] | None:
+        hit = self.scene.pick_face(x, y)
+        if hit is None:
+            return None
+        board_id, _point, axis, sign = hit
+        state = self.scene.controller.evaluation.boards.get(board_id)
+        if state is None or state.rotated:
+            return None
+        thickness = state.orientation.thickness_axis.position
+        if axis != thickness or axis == 2:
+            return None  # only the large faces of upright parts
+        return board_id, sign
+
+    def _exists(self, target: tuple[str, int]) -> bool:
+        board_id, side = target
+        return any(
+            f.kind == FittingKind.SHELF_PINS and f.side == side
+            for f in self.scene.controller.doc.fittings_of(board_id)
+        )
+
+    def _show(self, target: tuple[str, int] | None) -> None:
+        self.target = target
+        holes = []
+        if target is not None:
+            fitting = Fitting("", FittingKind.SHELF_PINS, target[0], None, target[1])
+            holes = fitting_holes(self.scene.controller.evaluation.boards, fitting)
+        self.holes = len(holes)
+        self.preview.SetVisibility(bool(holes))
+        if holes:
+            append = vtkAppendPolyData()
+            for _board, hole in holes:
+                direction = [0.0, 0.0, 0.0]
+                direction[hole.axis] = float(hole.direction)
+                centre = list(hole.center)
+                centre[hole.axis] += hole.direction * hole.depth / 2
+                append.AddInputData(
+                    pv.Cylinder(
+                        center=centre,
+                        direction=direction,
+                        radius=hole.diameter / 2,
+                        height=hole.depth,
+                        resolution=12,
+                    )
+                )
+            append.Update()
+            mapper = self.preview.GetMapper()
+            assert isinstance(mapper, vtkPolyDataMapper)
+            mapper.SetInputData(append.GetOutput())
+        if target is None:
+            text = _tr("Lochreihe: auf die Innenseite einer Seitenwand zeigen   (Esc: beenden)")
+        elif self._exists(target):
+            text = _tr("Lochreihe: diese Seite hat schon eine   (Esc: beenden)")
+        elif not holes:
+            text = _tr("Lochreihe: hier ist kein Platz   (Esc: beenden)")
+        else:
+            text = _tr("Lochreihe: {0} Bohrungen   (Klick: anlegen, Esc: beenden)").format(
+                len(holes)
+            )
+        self.scene.status_message.emit(text)
+        self.scene.viewport.render()
+
+    def hover(self, x: int, y: int) -> None:
+        self._show(self.target_at(x, y))
+
+    def press(self, x: int, y: int, ctrl: bool) -> bool:
+        target = self.target_at(x, y)
+        if target is None:
+            return False  # empty space: orbit
+        if self.holes and not self._exists(target):
+            self.scene.controller.add_fitting(FittingKind.SHELF_PINS, target[0], None, target[1])
+        self._show(target)
+        return True
 
 
 class MeasureTool(Tool):

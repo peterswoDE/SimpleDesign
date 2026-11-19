@@ -56,6 +56,7 @@ from simpledesign.ui.tools import (
     InsertTool,
     MeasureTool,
     SetDistanceTool,
+    ShelfPinTool,
     Tool,
 )
 from simpledesign.ui.tree_panel import TreePanel
@@ -127,7 +128,7 @@ class MainWindow(QMainWindow):
         )
         self.joints_panel = JointsPanel(self.controller)
         self.joints_dock = self._add_dock(
-            "joints", self.tr("Verbindungen"), self.joints_panel, right
+            "joints", self.tr("Verbindungen und Beschläge"), self.joints_panel, right
         )
         self.joints_panel.joint_created.connect(lambda _id: self.joints_dock.show())
         self.library_panel = LibraryPanel(self.controller.templates)
@@ -300,6 +301,12 @@ class MainWindow(QMainWindow):
             ),
             lambda: FrontTool(self.scene, front.FrontKind.DRAWER),
         )
+        self.action_shelf_pins = self._tool_action(
+            self.tr("&Lochreihe bohren"),
+            "Shift+L",
+            self.tr("Lochreihe für Bodenträger: auf die Innenseite einer Seitenwand klicken"),
+            lambda: ShelfPinTool(self.scene),
+        )
         self.action_measure = self._tool_action(
             self.tr("&Messen"),
             "M",
@@ -435,6 +442,9 @@ class MainWindow(QMainWindow):
 
         joint_menu = menu_bar.addMenu(self.tr("&Verbindung"))
         joint_menu.addActions(list(self.joints_panel.add_actions.values()))
+        joint_menu.addSeparator()
+        joint_menu.addActions(list(self.joints_panel.fitting_actions.values()))
+        joint_menu.addAction(self.action_shelf_pins)
 
         view_menu = menu_bar.addMenu(self.tr("&Ansicht"))
         view_menu.addActions(list(self.view_actions.values()))

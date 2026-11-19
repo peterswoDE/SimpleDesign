@@ -21,7 +21,9 @@ from simpledesign.core.materials.edgeband import (
 )
 from simpledesign.core.materials.library import BUILTIN_MATERIALS
 from simpledesign.core.materials.material import material_from_dict, material_to_dict
+from simpledesign.core.model import fitting as fittings
 from simpledesign.core.model.document import Document
+from simpledesign.core.model.fitting import Fitting, FittingKind
 from simpledesign.core.model.joint import Joint, JointKind, default_params
 from simpledesign.core.model.part import (
     EDITABLE_PROPERTIES,
@@ -39,7 +41,7 @@ from simpledesign.core.model.settings import CutSettings
 from simpledesign.core.sketch.model import from_dict as sketch_from_dict
 from simpledesign.core.sketch.model import to_dict as sketch_to_dict
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 FILE_SUFFIX = ".sdz"
 
 type Json = dict[str, Any]
@@ -71,10 +73,17 @@ def _migrate_3_to_4(data: Json) -> Json:
     return data
 
 
+def _migrate_4_to_5(data: Json) -> Json:
+    """Phase 9: fittings (hinges, slides, shelf pin rows)."""
+    data.setdefault("fittings", [])
+    return data
+
+
 MIGRATIONS: dict[int, Callable[[Json], Json]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
     3: _migrate_3_to_4,
+    4: _migrate_4_to_5,
 }
 
 
@@ -134,6 +143,17 @@ def to_dict(doc: Document) -> Json:
                 "params": dict(j.params),
             }
             for j in doc.joints.values()
+        ],
+        "fittings": [
+            {
+                "id": f.id,
+                "kind": f.kind.value,
+                "part_id": f.part_id,
+                "carrier_id": f.carrier_id,
+                "side": f.side,
+                "params": dict(f.params),
+            }
+            for f in doc.fittings.values()
         ],
         "cut_settings": {
             "kerf": doc.cut_settings.kerf,
@@ -204,6 +224,19 @@ def from_dict(data: Json) -> Document:
             params = default_params(kind)
             params.update({k: float(v) for k, v in j["params"].items() if k in params})
             doc.joints[j["id"]] = Joint(j["id"], kind, j["main_id"], j["attached_id"], params)
+        for f in data["fittings"]:
+            fitting_kind = FittingKind(f["kind"])
+            values = fittings.default_params(fitting_kind)
+            values.update({k: float(v) for k, v in f["params"].items() if k in values})
+            carrier = f["carrier_id"]
+            doc.fittings[f["id"]] = Fitting(
+                f["id"],
+                fitting_kind,
+                str(f["part_id"]),
+                None if carrier is None else str(carrier),
+                1 if int(f["side"]) >= 0 else -1,
+                values,
+            )
     except (KeyError, TypeError, ValueError, AttributeError) as error:
         raise FileFormatError(f"invalid file content: {error!r}") from error
     _check_references(doc)
@@ -229,6 +262,9 @@ def _check_references(doc: Document) -> None:
     for j in doc.joints.values():
         if j.main_id not in doc.boards or j.attached_id not in doc.boards:
             raise FileFormatError(f"joint {j.id} refers to an unknown board")
+    for f in doc.fittings.values():
+        if any(b not in doc.boards for b in f.board_ids()):
+            raise FileFormatError(f"fitting {f.id} refers to an unknown board")
 
 
 def migrate(data: Json) -> Json:

@@ -6,6 +6,7 @@ from PySide6.QtCore import QCoreApplication, QLocale
 
 from simpledesign.core.materials.edgeband import BandEdge
 from simpledesign.core.materials.material import MaterialKind
+from simpledesign.core.model.fitting import FittingKind
 from simpledesign.core.model.joint import JointKind
 from simpledesign.core.model.machining import Hardware, JointErrorCode
 from simpledesign.core.model.part import Axis, Orientation, band_edge_side
@@ -154,6 +155,7 @@ def joint_error_message(code: JointErrorCode) -> str:
         JointErrorCode.SCREW_TOO_SHORT: _tr("Die Schraube ist zu kurz."),
         JointErrorCode.INVALID_VALUE: _tr("Ein Wert ist ungültig."),
         JointErrorCode.ROTATED: _tr("Frei gedrehte Teile werden nicht automatisch verbunden."),
+        JointErrorCode.ORIENTATION: _tr("Die Teile liegen nicht passend für diesen Beschlag."),
     }
     return messages[code]
 
@@ -167,7 +169,48 @@ def machining_text(holes: int, cutouts: int) -> str:
     return ", ".join(parts)
 
 
+def fitting_kind_label(kind: FittingKind) -> str:
+    labels = {
+        FittingKind.HINGE: _tr("Topfband"),
+        FittingKind.SLIDE: _tr("Schubkastenschiene"),
+        FittingKind.SHELF_PINS: _tr("Lochreihe"),
+    }
+    return labels[kind]
+
+
+def fitting_param_label(name: str) -> str:
+    labels = {
+        "cup_diameter": _tr("Topfdurchmesser"),
+        "cup_depth": _tr("Topftiefe"),
+        "cup_distance": _tr("Topfmitte vom Rand"),
+        "end_distance": _tr("Abstand oben/unten"),
+        "count": _tr("Anzahl (0 = nach Höhe)"),
+        "plate_distance": _tr("Montageplatte hinter Vorderkante"),
+        "plate_hole_diameter": _tr("Bohrung Montageplatte"),
+        "plate_hole_depth": _tr("Bohrtiefe Montageplatte"),
+        "length": _tr("Nennlänge (0 = passend)"),
+        "front_distance": _tr("Abstand vorne"),
+        "back_distance": _tr("Abstand hinten"),
+        "hole_diameter": _tr("Bohrung Korpus"),
+        "hole_depth": _tr("Bohrtiefe Korpus"),
+        "part_hole_diameter": _tr("Vorbohrung Zarge"),
+        "part_hole_depth": _tr("Bohrtiefe Zarge"),
+        "diameter": _tr("Durchmesser"),
+        "depth": _tr("Tiefe"),
+        "spacing": _tr("Lochabstand"),
+        "first": _tr("Erstes Loch über Unterkante"),
+        "last": _tr("Letztes Loch unter Oberkante"),
+    }
+    return labels[name]
+
+
 def hardware_label(item: Hardware) -> str:
+    if item.kind == FittingKind.HINGE:
+        return _tr("Topfband {d} mm mit Montageplatte").format(d=number(item.diameter))
+    if item.kind == FittingKind.SLIDE:
+        return _tr("Schubkastenschiene NL {l} mm").format(l=number(item.length))
+    if isinstance(item.kind, FittingKind):
+        return fitting_kind_label(item.kind)
     return _tr("{kind} {d} × {l} mm").format(
         kind=joint_kind_label(item.kind), d=number(item.diameter), l=number(item.length)
     )

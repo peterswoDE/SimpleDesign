@@ -22,6 +22,8 @@ from simpledesign.core.ids import new_id
 from simpledesign.core.materials.edgeband import BandEdge, EdgeBand, builtin_edge_band
 from simpledesign.core.materials.library import DEFAULT_MATERIAL_ID, builtin_material
 from simpledesign.core.materials.material import Material
+from simpledesign.core.model import fitting as fittings
+from simpledesign.core.model.fitting import Fitting, FittingKind
 from simpledesign.core.model.joint import Joint, JointKind, default_params
 from simpledesign.core.model.part import (
     EDITABLE_PROPERTIES,
@@ -85,6 +87,7 @@ class Document:
         # Own edge bands and copies loaded from a file; built-ins are found anyway.
         self.edge_bands: dict[str, EdgeBand] = {}
         self.joints: dict[str, Joint] = {}
+        self.fittings: dict[str, Fitting] = {}
         self.cut_settings = CutSettings()
 
     # ================================================================== lookup
@@ -445,6 +448,36 @@ class Document:
     def joints_of(self, board_id: str) -> list[Joint]:
         return [j for j in self.joints.values() if board_id in (j.main_id, j.attached_id)]
 
+    # ================================================================== fittings
+    def add_fitting(
+        self, kind: FittingKind, part_id: str, carrier_id: str | None = None, side: int = 1
+    ) -> Fitting:
+        if part_id not in self.boards or (carrier_id is not None and carrier_id not in self.boards):
+            raise KeyError("a fitting needs existing boards")
+        if part_id == carrier_id:
+            raise ValueError("a fitting needs two different boards")
+        if (carrier_id is None) != (kind == FittingKind.SHELF_PINS):
+            raise ValueError("only shelf pin rows have no carrier")
+        fitting = Fitting(
+            new_id(),
+            kind,
+            part_id,
+            carrier_id,
+            1 if side >= 0 else -1,
+            fittings.default_params(kind),
+        )
+        self.fittings[fitting.id] = fitting
+        return fitting
+
+    def set_fitting_param(self, fitting_id: str, name: str, value: float) -> None:
+        fitting = self.fittings[fitting_id]
+        if name not in fittings.default_params(fitting.kind):
+            raise KeyError(name)
+        fitting.params[name] = float(value)
+
+    def fittings_of(self, board_id: str) -> list[Fitting]:
+        return [f for f in self.fittings.values() if board_id in f.board_ids()]
+
     # ================================================================== delete
     def with_contents(self, ids: Iterable[str]) -> set[str]:
         """``ids`` plus everything inside the groups among them."""
@@ -494,6 +527,12 @@ class Document:
         for joint in list(self.joints.values()):
             if joint.main_id not in self.boards or joint.attached_id not in self.boards:
                 del self.joints[joint.id]
+        # So do their fittings.
+        for obj_id in removed:
+            self.fittings.pop(obj_id, None)
+        for fitting in list(self.fittings.values()):
+            if any(b not in self.boards for b in fitting.board_ids()):
+                del self.fittings[fitting.id]
         self.prune_materials()
 
     # ================================================================== duplicate
@@ -574,6 +613,15 @@ class Document:
                 twin.main_id = mapping[joint.main_id]
                 twin.attached_id = mapping[joint.attached_id]
                 self.joints[twin.id] = twin
+        # Fittings whose boards are all copied, too.
+        for fitting in list(source.fittings.values()):
+            if all(b in copied for b in fitting.board_ids()):
+                copied_fitting = copy.deepcopy(fitting)
+                copied_fitting.id = new_id()
+                copied_fitting.part_id = mapping[fitting.part_id]
+                if fitting.carrier_id is not None:
+                    copied_fitting.carrier_id = mapping[fitting.carrier_id]
+                self.fittings[copied_fitting.id] = copied_fitting
         return [mapping[i] for i in top]
 
     # ================================================================== sketches

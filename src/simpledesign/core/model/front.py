@@ -15,6 +15,9 @@ drawers keep fitting when the furniture changes.
 A drawer is a front plus a box (bottom screwed underneath, two sides, front
 and back piece between the sides), with room for the slides at both sides.
 Several drawers stacked in one opening are a pattern ("Anordnung").
+
+Doors get hinges on the side they swing on (both sides for a pair of doors),
+drawers a slide on each side (:mod:`fitting`).
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from enum import StrEnum
 from simpledesign.core.model import fit
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation
+from simpledesign.core.model.fitting import FittingKind
 from simpledesign.core.model.part import Axis, Orientation
 
 type Vec3 = tuple[float, float, float]
@@ -48,6 +52,7 @@ class FrontSettings:
     mounting: Mounting = Mounting.OVERLAY
     gap: float = 3.0  # Fuge between fronts / around a front
     leaves: int = 1  # door: 1 or 2 (zweiflügelig)
+    hinge_right: bool = False  # one leaf: hinges on the right side
     whole: bool = False  # door over the whole furniture (ignore inner parts)
     drawers: int = 1  # stacked in the opening
     slide_clearance: float = 13.0  # per side, for the slides (Auszugsluft)
@@ -91,6 +96,7 @@ class Opening:
     front: Term  # front edge of the carcass (Y)
     back: Term  # face behind the opening (Y)
     board_ids: list[str]
+    sides: dict[int, str] = field(default_factory=dict)  # -1/+1: the parts left/right
 
     def inner(self, axis: int) -> Term:
         return self.inner_hi[axis].minus(self.inner_lo[axis])
@@ -127,6 +133,8 @@ def opening(
                 result.inner_lo[axis], result.outer_lo[axis] = inner, outer
             else:
                 result.inner_hi[axis], result.outer_hi[axis] = inner, outer
+            if axis == X:
+                result.sides[direction] = box.board_id
             if box.board_id not in result.board_ids:
                 result.board_ids.append(box.board_id)
     if min(result.inner(X).value, result.inner(Z).value) < fit.MIN_GAP:
@@ -166,6 +174,8 @@ class FrontPlan:
     kind: FrontKind
     parts: list[PartPlan] = field(default_factory=list)
     board_ids: list[str] = field(default_factory=list)  # the parts around
+    # (kind, part key, carrier board): fittings that come with the parts
+    fittings: list[tuple[FittingKind, str, str]] = field(default_factory=list)
 
     def boxes(self) -> list[tuple[Vec3, Vec3]]:
         return [box for part in self.parts for box in part.boxes]
@@ -257,7 +267,12 @@ def plan_door(
         leaves,
         (X, spacing),
     )
-    return FrontPlan(FrontKind.DOOR, [door], list(op.board_ids))
+    if leaves == 2:
+        hinged = [op.sides[-1], op.sides[1]]
+    else:
+        hinged = [op.sides[1 if settings.hinge_right else -1]]
+    hinges = [(FittingKind.HINGE, "front", carrier) for carrier in hinged]
+    return FrontPlan(FrontKind.DOOR, [door], list(op.board_ids), hinges)
 
 
 def plan_drawer(
@@ -384,7 +399,11 @@ def plan_drawer(
         pattern,
     )
     parts = [front, bottom, left, right, front_piece, back_piece]
-    return FrontPlan(FrontKind.DRAWER, parts, list(op.board_ids))
+    slides = [
+        (FittingKind.SLIDE, "left", op.sides[-1]),
+        (FittingKind.SLIDE, "right", op.sides[1]),
+    ]
+    return FrontPlan(FrontKind.DRAWER, parts, list(op.board_ids), slides)
 
 
 # ====================================================================== create
@@ -412,4 +431,8 @@ def create(doc: Document, plan: FrontPlan, group_id: str | None) -> list[str]:
             if prop in part.expressions:
                 doc.set_expression(board.id, prop, fill(part.expressions[prop]))
         ids.append(board.id)
+    by_key = {part.key: board_id for part, board_id in zip(plan.parts, ids, strict=True)}
+    for kind, key, carrier in plan.fittings:
+        if carrier in doc.boards:
+            doc.add_fitting(kind, by_key[key], carrier)
     return ids

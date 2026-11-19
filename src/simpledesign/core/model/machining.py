@@ -19,7 +19,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from simpledesign.core.model import fitting as fittings
 from simpledesign.core.model.document import Document
+from simpledesign.core.model.fitting import Fitting, FittingKind
 from simpledesign.core.model.joint import JOINT_DEFAULTS, Joint, JointKind
 from simpledesign.core.model.part import Orientation
 from simpledesign.core.model.state import BoardState, Vec3
@@ -37,6 +39,7 @@ class JointErrorCode(StrEnum):
     SCREW_TOO_SHORT = "screw_too_short"
     INVALID_VALUE = "invalid_value"  # a setting is out of range
     ROTATED = "rotated"  # freely rotated parts get no automatic joints
+    ORIENTATION = "orientation"  # fitting: the parts do not lie the right way
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,9 +113,10 @@ class PartShape:
 
 @dataclass(frozen=True, slots=True)
 class Hardware:
-    """Fittings for the bill of materials (Beschläge)."""
+    """Fittings for the bill of materials (Beschläge): joint fittings
+    (dowels, screws) and fittings with a drilling pattern (hinges, slides)."""
 
-    kind: JointKind
+    kind: JointKind | FittingKind
     diameter: float
     length: float
     quantity: int
@@ -528,6 +532,273 @@ def _apply(op: _Op) -> None:
         instance.features.append(what)
 
 
+# ====================================================================== fittings
+X, Y, Z = 0, 1, 2
+_HINGE_REACH = 100.0  # mm: the door edge lies at most this far from the carrier
+_SLIDE_REACH = 50.0  # mm: gap between drawer side and carcass side
+_PLATE_PITCH = 16.0  # mounting plate holes: 32 mm apart, around the cup height
+
+type _FittingHole = tuple[_Instance, Hole]
+type _HardwareKey = tuple[JointKind | FittingKind, float, float]
+
+
+def _centre(instance: _Instance, axis: int) -> float:
+    return (instance.lo[axis] + instance.hi[axis]) / 2
+
+
+def _overlaps(a: _Instance, b: _Instance, axis: int) -> bool:
+    return min(a.hi[axis], b.hi[axis]) - max(a.lo[axis], b.lo[axis]) > TOLERANCE
+
+
+def _point(**coords: float) -> Vec3:
+    return (coords["x"], coords["y"], coords["z"])
+
+
+def _at(axis: int, plane: float, u: tuple[int, float], v: tuple[int, float]) -> Vec3:
+    p = [0.0, 0.0, 0.0]
+    p[axis], p[u[0]], p[v[0]] = plane, u[1], v[1]
+    return _vec(p)
+
+
+def _check_fitting_params(fitting: Fitting) -> None:
+    values = [fitting.param(n) for n in fittings.FITTING_DEFAULTS[fitting.kind]]
+    if any(not math.isfinite(v) or v < 0 for v in values):
+        raise _PlanError(JointErrorCode.INVALID_VALUE)
+    positive = (
+        "cup_diameter",
+        "cup_depth",
+        "plate_hole_diameter",
+        "plate_hole_depth",
+        "hole_diameter",
+        "hole_depth",
+        "diameter",
+        "depth",
+        "spacing",
+    )
+    defaults = fittings.FITTING_DEFAULTS[fitting.kind]
+    if any(fitting.param(n) <= 0 for n in positive if n in defaults):
+        raise _PlanError(JointErrorCode.INVALID_VALUE)
+
+
+def _plan_hinge(
+    f: Fitting, doors: list[_Instance], carriers: list[_Instance]
+) -> tuple[list[_FittingHole], int]:
+    pairs = []
+    for c in carriers:
+        cx = _centre(c, X)
+        for d in doors:
+            if not _overlaps(c, d, Z) or d.hi[Y] < c.lo[Y] - TOLERANCE or d.lo[Y] > c.hi[Y]:
+                continue
+            distance = min(abs(d.lo[X] - cx), abs(d.hi[X] - cx))
+            if distance <= _HINGE_REACH:
+                pairs.append((distance, c, d))
+    if not pairs:
+        raise _PlanError(JointErrorCode.NO_CONTACT)
+    nearest = min(p[0] for p in pairs)
+    holes: list[_FittingHole] = []
+    cups = 0
+    for distance, c, d in pairs:
+        if distance > nearest + 1.0:
+            continue  # the other leaf of a pair of doors
+        cx = _centre(c, X)
+        left = cx < _centre(d, X)  # carrier left of the door: hinged at the door's left edge
+        cup_x = d.lo[X] + f.param("cup_distance") if left else d.hi[X] - f.param("cup_distance")
+        behind = _centre(c, Y) > _centre(d, Y)  # cup on the door face towards the carrier
+        cup_y, cup_dir = (d.hi[Y], -1) if behind else (d.lo[Y], 1)
+        if f.param("cup_depth") >= d.extent(Y) - TOLERANCE:
+            raise _PlanError(JointErrorCode.TOO_DEEP)
+        height, end = d.extent(Z), f.param("end_distance")
+        count = round(f.param("count")) or fittings.hinge_count(height)
+        if count == 1:
+            positions = [height / 2]
+        else:
+            if height - 2 * end <= 0:
+                raise _PlanError(JointErrorCode.INVALID_VALUE)
+            step = (height - 2 * end) / (count - 1)
+            positions = [end + i * step for i in range(count)]
+        plate_x, plate_dir = (c.hi[X], -1) if left else (c.lo[X], 1)
+        plate_y = max(c.lo[Y], min(d.hi[Y], c.hi[Y])) + f.param("plate_distance")
+        if f.param("plate_hole_depth") >= c.extent(X) - TOLERANCE:
+            raise _PlanError(JointErrorCode.TOO_DEEP)
+        for pos in positions:
+            z = d.lo[Z] + pos
+            cup = _point(x=cup_x, y=cup_y, z=z)
+            holes.append((d, Hole(cup, Y, cup_dir, f.param("cup_diameter"), f.param("cup_depth"))))
+            for dz in (-_PLATE_PITCH, _PLATE_PITCH):
+                if not (c.lo[Z] < z + dz < c.hi[Z] and c.lo[Y] < plate_y < c.hi[Y]):
+                    raise _PlanError(JointErrorCode.NO_CONTACT)
+                hole = Hole(
+                    _point(x=plate_x, y=plate_y, z=z + dz),
+                    X,
+                    plate_dir,
+                    f.param("plate_hole_diameter"),
+                    f.param("plate_hole_depth"),
+                )
+                holes.append((c, hole))
+            cups += 1
+    return holes, cups
+
+
+def _plan_slide(
+    f: Fitting, parts: list[_Instance], carriers: list[_Instance]
+) -> tuple[list[_FittingHole], dict[float, int]]:
+    holes: list[_FittingHole] = []
+    lengths: dict[float, int] = {}
+    for p in parts:
+        best: tuple[float, _Instance] | None = None
+        for c in carriers:
+            if not (_overlaps(p, c, Y) and _overlaps(p, c, Z)):
+                continue
+            gap = p.lo[X] - c.hi[X] if _centre(c, X) < _centre(p, X) else c.lo[X] - p.hi[X]
+            if -TOLERANCE <= gap <= _SLIDE_REACH and (best is None or gap < best[0]):
+                best = (gap, c)
+        if best is None:
+            continue
+        c = best[1]
+        depth = p.extent(Y)
+        length = f.param("length") or fittings.slide_length(depth)
+        if length is None or length > depth + TOLERANCE:
+            raise _PlanError(JointErrorCode.INVALID_VALUE)
+        first = f.param("front_distance")
+        steps = math.floor((length - 40.0 - first) / fittings.SYSTEM_32 + 1e-9)
+        if steps < 1:
+            raise _PlanError(JointErrorCode.INVALID_VALUE)
+        offsets = sorted(
+            {first, first + steps // 2 * fittings.SYSTEM_32, first + steps * fittings.SYSTEM_32}
+        )
+        if f.param("hole_depth") >= c.extent(X) - TOLERANCE or (
+            f.param("part_hole_depth") >= p.extent(X) - TOLERANCE
+        ):
+            raise _PlanError(JointErrorCode.TOO_DEEP)
+        carrier_left = _centre(c, X) < _centre(p, X)
+        c_plane, c_dir = (c.hi[X], -1) if carrier_left else (c.lo[X], 1)
+        p_plane, p_dir = (p.lo[X], 1) if carrier_left else (p.hi[X], -1)
+        z = _centre(p, Z)
+        for offset in offsets:
+            y = p.lo[Y] + offset
+            if not c.lo[Y] < y < c.hi[Y]:
+                raise _PlanError(JointErrorCode.NO_CONTACT)
+            holes.append(
+                (
+                    c,
+                    Hole(
+                        _point(x=c_plane, y=y, z=z),
+                        X,
+                        c_dir,
+                        f.param("hole_diameter"),
+                        f.param("hole_depth"),
+                    ),
+                )
+            )
+            holes.append(
+                (
+                    p,
+                    Hole(
+                        _point(x=p_plane, y=y, z=z),
+                        X,
+                        p_dir,
+                        f.param("part_hole_diameter"),
+                        f.param("part_hole_depth"),
+                    ),
+                )
+            )
+        lengths[length] = lengths.get(length, 0) + 1
+    if not lengths:
+        raise _PlanError(JointErrorCode.NO_CONTACT)
+    return holes, lengths
+
+
+def _plan_shelf_pins(
+    f: Fitting, parts: list[_Instance], thickness_axis: int, others: list[_Instance]
+) -> list[_FittingHole]:
+    k = thickness_axis
+    if k == Z:
+        raise _PlanError(JointErrorCode.ORIENTATION)
+    w = 3 - k - Z  # across the part: front to back (or left to right)
+    d, depth = f.param("diameter"), f.param("depth")
+    r = d / 2
+    holes: list[_FittingHole] = []
+    for p in parts:
+        if depth >= p.extent(k) - TOLERANCE:
+            raise _PlanError(JointErrorCode.TOO_DEEP)
+        rows = sorted({p.lo[w] + f.param("front_distance"), p.hi[w] - f.param("back_distance")})
+        if rows[0] - r < p.lo[w] or rows[-1] + r > p.hi[w]:
+            raise _PlanError(JointErrorCode.INVALID_VALUE)
+        if len(rows) == 2 and rows[1] - rows[0] < d:
+            rows = [(rows[0] + rows[1]) / 2]
+        top = p.hi[Z] - f.param("last")
+        z = p.lo[Z] + f.param("first")
+        heights = []
+        while z <= top + 1e-6:
+            heights.append(z)
+            z += f.param("spacing")
+        if not heights:
+            raise _PlanError(JointErrorCode.INVALID_VALUE)
+        plane = p.hi[k] if f.side > 0 else p.lo[k]
+        touching = [
+            o
+            for o in others
+            if o is not p
+            and abs((o.lo[k] if f.side > 0 else o.hi[k]) - plane) < TOLERANCE
+            and _overlaps(o, p, w)
+            and _overlaps(o, p, Z)
+        ]
+        for row in rows:
+            for z in heights:
+                covered = any(
+                    o.lo[w] < row + r and o.hi[w] > row - r and o.lo[Z] < z + r and o.hi[Z] > z - r
+                    for o in touching
+                )
+                if not covered:
+                    hole = Hole(_at(k, plane, (w, row), (Z, z)), k, -f.side, d, depth)
+                    holes.append((p, hole))
+    return holes
+
+
+def _plan_fitting(
+    f: Fitting, instances: Mapping[str, list[_Instance]], boards: Mapping[str, BoardState]
+) -> tuple[list[_FittingHole], dict[_HardwareKey, int]]:
+    """Holes of one fitting and its hardware (raises _PlanError)."""
+    ids = f.board_ids()
+    if any(i not in boards for i in ids):
+        raise _PlanError(JointErrorCode.NO_CONTACT)
+    if any(boards[i].rotated for i in ids):
+        raise _PlanError(JointErrorCode.ROTATED)
+    _check_fitting_params(f)
+    part = boards[f.part_id].orientation.thickness_axis.position
+    if f.kind == FittingKind.SHELF_PINS:
+        others = [o for items in instances.values() for o in items]
+        return _plan_shelf_pins(f, instances[f.part_id], part, others), {}
+    assert f.carrier_id is not None
+    carrier = boards[f.carrier_id].orientation.thickness_axis.position
+    if f.kind == FittingKind.HINGE:
+        if part != Y or carrier != X:
+            raise _PlanError(JointErrorCode.ORIENTATION)
+        holes, cups = _plan_hinge(f, instances[f.part_id], instances[f.carrier_id])
+        return holes, {(FittingKind.HINGE, f.param("cup_diameter"), 0.0): cups}
+    if part != X or carrier != X:
+        raise _PlanError(JointErrorCode.ORIENTATION)
+    holes, lengths = _plan_slide(f, instances[f.part_id], instances[f.carrier_id])
+    return holes, {(FittingKind.SLIDE, 0.0, length): n for length, n in lengths.items()}
+
+
+def fitting_holes(boards: Mapping[str, BoardState], fitting: Fitting) -> list[tuple[str, Hole]]:
+    """World holes ``fitting`` would drill (for previews; empty if it cannot be built)."""
+    instances = {
+        board_id: [
+            _Instance(list(origin), [origin[i] + state.size[i] for i in range(3)])
+            for origin in state.instance_origins()
+        ]
+        for board_id, state in boards.items()
+    }
+    owner = {id(i): board_id for board_id, items in instances.items() for i in items}
+    try:
+        holes, _hardware = _plan_fitting(fitting, instances, boards)
+    except _PlanError:
+        return []
+    return [(owner[id(instance)], hole) for instance, hole in holes]
+
+
 def _sketch_feature(state: BoardState, origin: Vec3, sketch: SketchFeature) -> Feature:
     o = state.orientation
     axes = (o.length_axis.position, o.width_axis.position, o.thickness_axis.position)
@@ -565,7 +836,7 @@ def compute_machining(
                 )
                 instance.cut_operations += sketch.cut
     result = Machining()
-    fittings: dict[tuple[JointKind, float, float], int] = {}
+    joint_hardware: dict[_HardwareKey, int] = {}
     spans: list[tuple[_Instance, _GrooveSpan]] = []
     for joint in doc.joints.values():
         if joint.main_id not in boards or joint.attached_id not in boards:
@@ -599,16 +870,27 @@ def compute_machining(
                 spans.append((op[0], op[1]))
         if count:
             key = (joint.kind, joint.param("diameter"), joint.param("length"))
-            fittings[key] = fittings.get(key, 0) + count
+            joint_hardware[key] = joint_hardware.get(key, 0) + count
     for main, span in spans:
         _widen(main, span)
+    hardware: dict[_HardwareKey, int] = dict(joint_hardware)
+    for fitting in doc.fittings.values():
+        try:
+            holes, used = _plan_fitting(fitting, instances, boards)
+        except _PlanError as failure:
+            result.errors[fitting.id] = failure.code
+            continue
+        for instance, hole in holes:
+            instance.features.append(hole)
+        for item, n in used.items():
+            hardware[item] = hardware.get(item, 0) + n
     result.parts = {
         board_id: [_rotated(i.shape(), boards[board_id]) for i in items]
         for board_id, items in instances.items()
     }
     result.hardware = [
         Hardware(kind, diameter, length, quantity)
-        for (kind, diameter, length), quantity in sorted(fittings.items())
+        for (kind, diameter, length), quantity in sorted(hardware.items())
     ]
     return result
 

@@ -26,6 +26,7 @@ from simpledesign.core.materials.library import LibraryError, MaterialLibrary
 from simpledesign.core.model import arrange, backpanel, fit, front, split, transform
 from simpledesign.core.model.document import Document, ref_key
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
+from simpledesign.core.model.fitting import FittingKind
 from simpledesign.core.model.joint import JointKind
 from simpledesign.core.model.part import Axis, Orientation, SketchCut
 from simpledesign.core.model.settings import CutSettings
@@ -283,6 +284,31 @@ class Controller(QObject):
                 del d.joints[joint_id]
 
         self.execute(self.tr("Verbindung löschen"), change)
+
+    # ------------------------------------------------------------------ fittings
+    def add_fitting(
+        self, kind: FittingKind, part_id: str, carrier_id: str | None = None, side: int = 1
+    ) -> str:
+        return self.execute(
+            self.tr("Beschlag anlegen"),
+            lambda d: d.add_fitting(kind, part_id, carrier_id, side).id,
+        )
+
+    def set_fitting_param(self, fitting_id: str, name: str, value: float) -> None:
+        self.execute(
+            self.tr("Beschlag ändern"),
+            lambda d: d.set_fitting_param(fitting_id, name, value),
+            merge_key=f"fitting:{fitting_id}:{name}",
+        )
+
+    def delete_fittings(self, fitting_ids: Iterable[str]) -> None:
+        ids = [i for i in fitting_ids if i in self.doc.fittings]
+
+        def change(d: Document) -> None:
+            for fitting_id in ids:
+                del d.fittings[fitting_id]
+
+        self.execute(self.tr("Beschlag löschen"), change)
 
     def set_cut_settings(self, settings: CutSettings) -> None:
         def change(d: Document) -> None:
