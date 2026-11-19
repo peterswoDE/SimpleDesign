@@ -22,7 +22,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from simpledesign.core.io import sdz
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
-from simpledesign.core.model import arrange, fit, transform
+from simpledesign.core.model import arrange, backpanel, fit, transform
 from simpledesign.core.model.document import Document, ref_key
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.joint import JointKind
@@ -281,7 +281,10 @@ class Controller(QObject):
         groove = self.groove
 
         def change(d: Document) -> str:
-            return fit.create(d, plan, group_id, material_id, thickness_formula, groove)
+            board_id = fit.create(d, plan, group_id, material_id, thickness_formula, groove)
+            if d.boards[board_id].back_panel:
+                backpanel.stop_at_back(d, Evaluator().evaluate(d), [board_id])
+            return board_id
 
         board_id = self.execute(self.tr("{0} einpassen").format(fit.BASE_NAMES[plan.kind]), change)
         self.set_selection([board_id])
@@ -295,11 +298,57 @@ class Controller(QObject):
     def seat_in_groove(self, panel_id: str, groove: fit.GrooveSettings) -> bool:
         """Fit a panel into grooves of the parts around it; False if not surrounded."""
         evaluation = self.evaluation
+
+        def change(d: Document) -> None:
+            fit.seat_in_groove(d, evaluation, panel_id, groove)
+            if d.boards[panel_id].back_panel:
+                backpanel.stop_at_back(d, Evaluator().evaluate(d), [panel_id])
+
         try:
-            self.execute(
-                self.tr("In Nut setzen"),
-                lambda d: fit.seat_in_groove(d, evaluation, panel_id, groove),
-            )
+            self.execute(self.tr("In Nut setzen"), change)
+        except ValueError:
+            return False
+        return True
+
+    # ------------------------------------------------------------------ back panels
+    def set_back_panel(self, board_id: str, on: bool) -> None:
+        """Mark a board as back panel; parts reaching into it stop at its front."""
+
+        def change(d: Document) -> None:
+            d.boards[board_id].back_panel = on
+            if on:
+                backpanel.stop_at_back(d, Evaluator().evaluate(d), [board_id])
+
+        self.execute(self.tr("Rückwand festlegen"), change)
+
+    def set_back_distance(self, panel_id: str, distance: float) -> bool:
+        """Distance of the back panel from the rear edge; False if not joined."""
+        evaluation = self.evaluation
+
+        def change(d: Document) -> None:
+            backpanel.set_back_distance(d, evaluation, panel_id, distance)
+            backpanel.stop_at_back(d, Evaluator().evaluate(d), [panel_id])
+
+        try:
+            self.execute(self.tr("Abstand der Rückwand ändern"), change)
+        except ValueError:
+            return False
+        return True
+
+    def set_through_back(self, board_id: str, on: bool) -> bool:
+        """Let a part go through the back panel (splitting it) or stop at it
+        again (joining the halves). False if that is not possible here."""
+        evaluation = self.evaluation
+
+        def change(d: Document) -> None:
+            if on:
+                backpanel.pass_through(d, evaluation, board_id)
+            else:
+                backpanel.join_back(d, evaluation, board_id)
+            d.boards[board_id].through_back = on
+
+        try:
+            self.execute(self.tr("Durch die Rückwand führen"), change)
         except ValueError:
             return False
         return True

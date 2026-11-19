@@ -152,6 +152,10 @@ class Board:
     # Grain direction does not matter for this part (e.g. hidden inner parts):
     # the cut list may turn it. Has no effect for materials without grain.
     ignore_grain: bool = False
+    # Back panel ("Rückwand"): other parts stop at its front face.
+    back_panel: bool = False
+    # Goes through the back panel to the rear edge (splits the panel).
+    through_back: bool = False
     # Sketched outline: the part is this profile extruded by the thickness.
     # Length and width then follow from the profile (bounding box).
     profile: Sketch | None = None

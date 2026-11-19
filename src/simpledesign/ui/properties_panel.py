@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from simpledesign.app.controller import Controller
+from simpledesign.core.model import backpanel
 from simpledesign.core.model.part import (
     DIMENSIONS,
     PATTERN,
@@ -55,6 +57,7 @@ class PropertiesPanel(QScrollArea):
 
         controller.document_changed.connect(self.refresh)
         controller.selection_changed.connect(self.refresh)
+        controller.selection_changed.connect(lambda: self._show_back_message(""))
         controller.library_changed.connect(self.refresh)
         self.refresh()
 
@@ -94,6 +97,7 @@ class PropertiesPanel(QScrollArea):
         self.orientation_combo.activated.connect(self._on_orientation)
         form.addRow(self.tr("Lage"), self.orientation_combo)
         layout.addWidget(general)
+        layout.addWidget(self._build_back_box())
         layout.addWidget(self._build_sketch_box())
 
         self.fields: dict[str, ExpressionField] = {}
@@ -170,6 +174,89 @@ class PropertiesPanel(QScrollArea):
         self.group_page = page
         self.stack.addWidget(page)
 
+    def _build_back_box(self) -> QGroupBox:
+        box = QGroupBox(self.tr("Rückwand"))
+        form = QFormLayout(box)
+        self.back_panel_check = QCheckBox(self.tr("Ist Rückwand"))
+        self.back_panel_check.setToolTip(
+            self.tr("Andere Teile enden vorne an der Rückwand und folgen ihr.")
+        )
+        self.back_panel_check.clicked.connect(self._on_back_panel)
+        form.addRow("", self.back_panel_check)
+        self.back_distance_spin = QDoubleSpinBox()
+        self.back_distance_spin.setRange(0, 1000)
+        self.back_distance_spin.setDecimals(1)
+        self.back_distance_spin.setSuffix(" mm")
+        self.back_distance_spin.setKeyboardTracking(False)
+        self.back_distance_spin.setToolTip(
+            self.tr("Abstand der Rückseite der Rückwand zur Hinterkante des Möbels")
+        )
+        self.back_distance_spin.editingFinished.connect(self._on_back_distance)
+        self.back_distance_label = QLabel(self.tr("Abstand zur Hinterkante"))
+        form.addRow(self.back_distance_label, self.back_distance_spin)
+        self.through_back_check = QCheckBox(self.tr("Geht durch die Rückwand"))
+        self.through_back_check.setToolTip(
+            self.tr(
+                "Das Teil reicht bis zur Hinterkante und teilt die Rückwand "
+                "(z. B. eine senkrechte Unterteilung)."
+            )
+        )
+        self.through_back_check.clicked.connect(self._on_through_back)
+        form.addRow("", self.through_back_check)
+        self.back_message = QLabel()
+        self.back_message.setWordWrap(True)
+        self.back_message.setVisible(False)
+        form.addRow(self.back_message)
+        return box
+
+    def _refresh_back(self, board_id: str) -> None:
+        doc = self.controller.doc
+        board = doc.boards[board_id]
+        self.back_panel_check.setChecked(board.back_panel)
+        distance = (
+            backpanel.back_distance(doc, self.controller.evaluation, board_id)
+            if board.back_panel
+            else None
+        )
+        self.back_distance_spin.setVisible(distance is not None)
+        self.back_distance_label.setVisible(distance is not None)
+        if distance is not None:
+            self.back_distance_spin.setValue(distance)
+        self.through_back_check.setVisible(not board.back_panel)
+        self.through_back_check.setChecked(board.through_back)
+
+    def _show_back_message(self, text: str) -> None:
+        self.back_message.setText(text)
+        self.back_message.setVisible(bool(text))
+
+    def _on_back_panel(self, checked: bool) -> None:
+        if (board_id := self._single()) is not None:
+            self._show_back_message("")
+            self.controller.set_back_panel(board_id, checked)
+
+    def _on_back_distance(self) -> None:
+        board_id = self._single()
+        if board_id is None or self._updating or not self.back_distance_spin.isVisible():
+            return
+        value = self.back_distance_spin.value()
+        current = backpanel.back_distance(self.controller.doc, self.controller.evaluation, board_id)
+        if current is not None and abs(current - value) > 1e-6:
+            self.controller.set_back_distance(board_id, value)
+
+    def _on_through_back(self, checked: bool) -> None:
+        if (board_id := self._single()) is None:
+            return
+        if self.controller.set_through_back(board_id, checked):
+            self._show_back_message("")
+            return
+        self._show_back_message(
+            self.tr(
+                "Geht nicht: Hinter dem Teil muss eine Rückwand liegen, die es "
+                "ganz durchquert (z. B. eine Trennwand von Boden bis Deckel)."
+            )
+        )
+        self.refresh()
+
     # ------------------------------------------------------------------ refresh
     def _single(self) -> str | None:
         selection = self.controller.selection
@@ -196,6 +283,7 @@ class PropertiesPanel(QScrollArea):
                 self.ignore_grain_check.setChecked(board.ignore_grain or not material.has_grain)
                 index = self.orientation_combo.findData(board.orientation.value)
                 self.orientation_combo.setCurrentIndex(index)
+                self._refresh_back(board.id)
                 axis_index = self.pattern_axis_combo.findData(board.pattern_axis.value)
                 self.pattern_axis_combo.setCurrentIndex(axis_index)
                 rotation_index = self.rotation_axis_combo.findData(board.rotation_axis.value)

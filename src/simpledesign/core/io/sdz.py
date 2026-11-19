@@ -101,6 +101,8 @@ def to_dict(doc: Document) -> Json:
                 "visible": b.visible,
                 "transparent": b.transparent,
                 "ignore_grain": b.ignore_grain,
+                "back_panel": b.back_panel,
+                "through_back": b.through_back,
                 "profile": None if b.profile is None else sketch_to_dict(b.profile),
                 "cuts": [
                     {
@@ -170,6 +172,8 @@ def from_dict(data: Json) -> Document:
                 visible=bool(b["visible"]),
                 transparent=bool(b["transparent"]),
                 ignore_grain=bool(b["ignore_grain"]),
+                back_panel=bool(b.get("back_panel", False)),
+                through_back=bool(b.get("through_back", False)),
                 profile=None if profile is None else sketch_from_dict(profile),
                 cuts=[
                     SketchCut(

@@ -346,6 +346,7 @@ def create(
     doc.set_expression(board.id, "thickness", thickness_formula)
     for prop in ("length", "width", "x", "y", "z"):
         doc.set_expression(board.id, prop, plan.expressions[prop].replace("{name}", name))
+    board.back_panel = plan.kind == InsertKind.BACK
     settings = groove or GrooveSettings()
     for kind, main_id in plan.joints:
         joint = doc.add_joint(kind, main_id, board.id)
@@ -399,6 +400,7 @@ def seat_in_groove(
     distance = f"{groove.distance:g}"
     if back_hi.value - (q[t]) <= q[t] - back_lo.value:
         position = f"{back_hi.formula} - {distance} - {name}.thickness"
+        doc.boards[panel_id].back_panel = True
     else:
         position = f"{back_lo.formula} + {distance}"
     doc.set_expression(panel_id, "xyz"[t], position)
