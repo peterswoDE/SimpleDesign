@@ -9,6 +9,9 @@ A fitting belongs to a *part* and, except for shelf pin rows, is held by a
   the carcass side next to it. Holes in both.
 * shelf pin row (Lochreihe): holes on one face of a part (``side`` +1/-1
   along its thickness axis) for adjustable shelves.
+* handle (Griff / Knopf): part = door or drawer front, no carrier. Through
+  holes for the screws; on a door opposite its hinges, on a drawer front
+  in the middle. ``hole_spacing`` 0 is a knob.
 
 As with joints, positions are not stored: they come from the computed
 geometry every time, so the holes follow every change. Settings are plain
@@ -25,6 +28,11 @@ class FittingKind(StrEnum):
     HINGE = "hinge"  # Topfband
     SLIDE = "slide"  # Schubkastenschiene
     SHELF_PINS = "shelf_pins"  # Lochreihe für Bodenträger
+    HANDLE = "handle"  # Griff oder Knopf
+
+
+# fittings on one part only (no carrier)
+CARRIERLESS = frozenset({FittingKind.SHELF_PINS, FittingKind.HANDLE})
 
 
 FITTING_DEFAULTS: dict[FittingKind, dict[str, float]] = {
@@ -54,6 +62,14 @@ FITTING_DEFAULTS: dict[FittingKind, dict[str, float]] = {
         "spacing": 32.0,  # System 32
         "first": 96.0,  # lowest hole above the bottom of the part
         "last": 96.0,  # highest hole below the top of the part
+    },
+    FittingKind.HANDLE: {
+        "hole_spacing": 128.0,  # Bohrabstand of a bar handle; 0 = knob
+        "edge_distance": 40.0,  # door: handle centre from the edge opposite the hinges
+        "top_distance": 0.0,  # handle centre below the top edge; 0 = middle
+        "screw_diameter": 5.0,  # through holes
+        "grip_diameter": 12.0,  # thickness of the bar / knob (for the 3D view)
+        "projection": 30.0,  # how far the handle stands out of the front
     },
 }
 

@@ -175,7 +175,7 @@ class FrontPlan:
     parts: list[PartPlan] = field(default_factory=list)
     board_ids: list[str] = field(default_factory=list)  # the parts around
     # (kind, part key, carrier board): fittings that come with the parts
-    fittings: list[tuple[FittingKind, str, str]] = field(default_factory=list)
+    fittings: list[tuple[FittingKind, str, str | None]] = field(default_factory=list)
 
     def boxes(self) -> list[tuple[Vec3, Vec3]]:
         return [box for part in self.parts for box in part.boxes]
@@ -271,7 +271,10 @@ def plan_door(
         hinged = [op.sides[-1], op.sides[1]]
     else:
         hinged = [op.sides[1 if settings.hinge_right else -1]]
-    hinges = [(FittingKind.HINGE, "front", carrier) for carrier in hinged]
+    hinges: list[tuple[FittingKind, str, str | None]] = [
+        (FittingKind.HINGE, "front", carrier) for carrier in hinged
+    ]
+    hinges.append((FittingKind.HANDLE, "front", None))
     return FrontPlan(FrontKind.DOOR, [door], list(op.board_ids), hinges)
 
 
@@ -399,9 +402,10 @@ def plan_drawer(
         pattern,
     )
     parts = [front, bottom, left, right, front_piece, back_piece]
-    slides = [
+    slides: list[tuple[FittingKind, str, str | None]] = [
         (FittingKind.SLIDE, "left", op.sides[-1]),
         (FittingKind.SLIDE, "right", op.sides[1]),
+        (FittingKind.HANDLE, "front", None),
     ]
     return FrontPlan(FrontKind.DRAWER, parts, list(op.board_ids), slides)
 
@@ -437,6 +441,6 @@ def create(doc: Document, plan: FrontPlan, group_id: str | None) -> list[str]:
             doc.boards[board_id].grain_group = doc.new_grain_group()
     by_key = {part.key: board_id for part, board_id in zip(plan.parts, ids, strict=True)}
     for kind, key, carrier in plan.fittings:
-        if carrier in doc.boards:
+        if carrier is None or carrier in doc.boards:
             doc.add_fitting(kind, by_key[key], carrier)
     return ids

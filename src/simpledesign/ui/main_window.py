@@ -68,6 +68,7 @@ from simpledesign.ui.tools import (
     MeasureTool,
     SetDistanceTool,
     ShelfPinTool,
+    SimulationTool,
     Tool,
 )
 from simpledesign.ui.tree_panel import TreePanel
@@ -356,6 +357,19 @@ class MainWindow(QMainWindow):
             self.tr("Lochreihe für Bodenträger: auf die Innenseite einer Seitenwand klicken"),
             lambda: ShelfPinTool(self.scene),
         )
+        self.action_simulation = self._tool_action(
+            self.tr("S&imulation"),
+            "Shift+S",
+            self.tr("Türen öffnen und Schubladen ausziehen: Tür oder Schubladenfront anklicken"),
+            lambda: SimulationTool(self.scene),
+        )
+        self.action_hardware = QAction(self.tr("&Beschläge zeigen"), self)
+        self.action_hardware.setCheckable(True)
+        self.action_hardware.setChecked(True)
+        self.action_hardware.setToolTip(
+            self.tr("Topfbänder, Auszüge und Griffe im 3D-Modell zeigen")
+        )
+        self.action_hardware.toggled.connect(lambda on: setattr(self.scene, "show_hardware", on))
         self.action_measure = self._tool_action(
             self.tr("&Messen"),
             "M",
@@ -586,6 +600,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_snap)
         view_menu.addAction(self.action_rotate_mode)
         view_menu.addActions([self.action_measure, self.action_measure_points])
+        view_menu.addActions([self.action_simulation, self.action_hardware])
         view_menu.addSeparator()
         view_menu.addActions(
             [
@@ -665,6 +680,7 @@ class MainWindow(QMainWindow):
                     self.action_xray,
                     self.action_explode,
                     self.action_section,
+                    self.action_simulation,
                     *self.view_actions.values(),
                 ],
             ),

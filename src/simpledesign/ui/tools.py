@@ -8,11 +8,11 @@ scene hands them back when the tool ends: Esc, right click).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import pyvista as pv
-from PySide6.QtCore import QCoreApplication, Qt
+from PySide6.QtCore import QCoreApplication, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QWidget,
 )
+from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkFiltersCore import vtkAppendPolyData
 from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
@@ -96,6 +97,9 @@ class Tool:
 
     def type_key(self, key: int, text: str) -> bool:
         return False
+
+    def scene_rebuilt(self) -> None:
+        """The scene made its actors anew (document or selection changed)."""
 
 
 class InsertTool(Tool):
@@ -523,6 +527,187 @@ class _FrontOptions(QWidget):
         s.top_gap = self.top_gap.value()
         s.back_gap = self.back_gap.value()
         self.tool.settings_changed()
+
+
+DOOR_ANGLE = 100.0  # degrees a door opens in the simulation
+SIMULATION_STEPS = 15  # animation frames for opening / closing
+SIMULATION_INTERVAL_MS = 20
+
+
+@dataclass
+class Motion:
+    """How one door leaf or drawer moves: rotation about a vertical axis
+    through ``pivot`` (doors) or a shift by ``travel`` (drawers)."""
+
+    members: list[tuple[str, int]]  # (board, copy) moving together
+    pivot: Vec3 | None = None
+    angle: float = 0.0  # full opening, degrees about +Z
+    travel: Vec3 = (0.0, 0.0, 0.0)
+    progress: float = 0.0  # 0 closed .. 1 open
+    target: float = 0.0
+    actors: list[vtkActor] = field(default_factory=list)
+
+    def transform(self) -> vtkTransform | None:
+        if self.progress <= 0:
+            return None
+        t = self.progress * self.progress * (3 - 2 * self.progress)  # ease in and out
+        result = vtkTransform()
+        result.PostMultiply()
+        if self.pivot is not None:
+            px, py, pz = self.pivot
+            result.Translate(-px, -py, -pz)
+            result.RotateZ(self.angle * t)
+            result.Translate(px, py, pz)
+        else:
+            result.Translate(self.travel[0] * t, self.travel[1] * t, self.travel[2] * t)
+        return result
+
+
+class SimulationTool(Tool):
+    """Try doors and drawers: a click opens a door leaf or pulls a drawer out
+    on its slides, the next click closes it. Only the view moves."""
+
+    def __init__(self, scene: Scene) -> None:
+        super().__init__(scene)
+        self.motions: dict[tuple[str, int], Motion] = {}
+        self.timer = QTimer()
+        self.timer.setInterval(SIMULATION_INTERVAL_MS)
+        self.timer.timeout.connect(self.step)
+
+    def title(self) -> str:
+        return _tr("Simulation")
+
+    def start(self) -> None:
+        self.scene.status_message.emit(
+            _tr(
+                "Tür oder Schubladenfront anklicken: öffnet sie, noch einmal: "
+                "schließt sie   (Esc: beenden)"
+            )
+        )
+
+    def finish(self) -> None:
+        self.timer.stop()
+        self.motions.clear()
+        self.scene.rebuild()  # everything back in place
+
+    # ---------------------------------------------------------------- motions
+    def motion_for(self, board_id: str, copy: int) -> Motion | None:
+        """The door leaf or the drawer that ``board_id`` copy ``copy`` belongs to."""
+        doc = self.scene.controller.doc
+        evaluation = self.scene.controller.evaluation
+        solids = self.scene.hardware_solids()
+        hinges = [
+            f
+            for f in doc.fittings.values()
+            if f.kind == FittingKind.HINGE and f.part_id == board_id
+        ]
+        state = evaluation.boards.get(board_id)
+        if state is None:
+            return None
+        origins = state.instance_origins()
+        if copy >= len(origins):
+            return None
+        lo = origins[copy]
+        hi = (lo[0] + state.size[0], lo[1] + state.size[1], lo[2] + state.size[2])
+        if hinges:
+            centre = (lo[0] + hi[0]) / 2
+            cups = [
+                (x.lo[0] + x.hi[0]) / 2
+                for x in solids
+                if x.kind == FittingKind.HINGE and x.board_id == board_id and x.copy == copy
+            ]
+            if cups:
+                left = sum(cups) / len(cups) < centre
+            else:
+                carrier = evaluation.boards.get(hinges[0].carrier_id or "")
+                left = carrier is None or carrier.x < centre
+            pivot = (lo[0] if left else hi[0], lo[1], lo[2])
+            return Motion([(board_id, copy)], pivot, -DOOR_ANGLE if left else DOOR_ANGLE)
+        group = doc.boards[board_id].group_id
+        if group is None:
+            return None
+        members = [b.id for b in doc.boards.values() if b.group_id == group]
+        slides = [
+            f for f in doc.fittings.values() if f.kind == FittingKind.SLIDE and f.part_id in members
+        ]
+        if not slides:
+            return None
+        rails = [
+            x.hi[1] - x.lo[1]
+            for x in solids
+            if x.kind == FittingKind.SLIDE and x.board_id not in members
+        ]
+        depth = max(
+            (evaluation.boards[m].size[1] for m in members if m in evaluation.boards),
+            default=0.0,
+        )
+        travel = max(rails) if rails else depth * 2 / 3
+        return Motion(
+            [(m, copy) for m in members if copy < len(evaluation.boards[m].instance_origins())],
+            travel=(0.0, -travel, 0.0),
+        )
+
+    def _apply(self, motion: Motion) -> None:
+        t = motion.transform()
+        for actor in motion.actors:
+            actor.SetUserTransform(t)
+
+    def _collect(self, motion: Motion) -> None:
+        motion.actors = [
+            a
+            for board_id, copy in motion.members
+            for a in self.scene.instance_actors(board_id, copy)
+        ]
+
+    def press(self, x: int, y: int, ctrl: bool) -> bool:
+        hit = self.scene.instance_at(x, y)
+        motion = None
+        if hit is not None:
+            motion = next((m for m in self.motions.values() if hit in m.members), None)
+            if motion is None:
+                motion = self.motion_for(*hit)
+                if motion is not None:
+                    self._collect(motion)
+                    self.motions[motion.members[0]] = motion
+        if motion is None:
+            self.scene.status_message.emit(
+                _tr("Hier ist keine Tür und keine Schublade mit Auszügen   (Esc: beenden)")
+            )
+            return True
+        motion.target = 0.0 if motion.target > 0 else 1.0
+        self.timer.start()
+        return True
+
+    def step(self) -> None:
+        """One animation frame towards every motion's target."""
+        delta = 1 / SIMULATION_STEPS
+        busy = False
+        for motion in self.motions.values():
+            if motion.progress == motion.target:
+                continue
+            if motion.progress < motion.target:
+                motion.progress = min(motion.target, motion.progress + delta)
+            else:
+                motion.progress = max(motion.target, motion.progress - delta)
+            busy = busy or motion.progress != motion.target
+            self._apply(motion)
+        if not busy:
+            self.timer.stop()
+        self.scene.viewport.render()
+
+    def run_to_end(self) -> None:
+        """Finish all running motions at once."""
+        while self.timer.isActive():
+            self.step()
+
+    def scene_rebuilt(self) -> None:
+        boards = self.scene.controller.doc.boards
+        for key, motion in list(self.motions.items()):
+            if any(b not in boards for b, _copy in motion.members):
+                del self.motions[key]
+                continue
+            self._collect(motion)
+            self._apply(motion)
 
 
 def scene_shift(scene: Scene) -> bool:

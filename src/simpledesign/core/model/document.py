@@ -467,8 +467,8 @@ class Document:
             raise KeyError("a fitting needs existing boards")
         if part_id == carrier_id:
             raise ValueError("a fitting needs two different boards")
-        if (carrier_id is None) != (kind == FittingKind.SHELF_PINS):
-            raise ValueError("only shelf pin rows have no carrier")
+        if (carrier_id is None) != (kind in fittings.CARRIERLESS):
+            raise ValueError("only shelf pin rows and handles have no carrier")
         fitting = Fitting(
             new_id(),
             kind,

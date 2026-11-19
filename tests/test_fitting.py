@@ -12,7 +12,7 @@ from simpledesign.core.model import fitting, front
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.fitting import FittingKind
-from simpledesign.core.model.machining import Hole, JointErrorCode
+from simpledesign.core.model.machining import Hardware, Hole, JointErrorCode
 from simpledesign.ui.main_window import MainWindow
 from simpledesign.ui.texts import hardware_label
 from simpledesign.ui.tools import ShelfPinTool
@@ -38,6 +38,14 @@ def _holes(ev: Evaluation, board: str, diameter: float, copy: int = 0) -> list[H
     return sorted(result, key=lambda h: h.center[2])
 
 
+def _kind(doc: Document, kind: FittingKind) -> list[fitting.Fitting]:
+    return [f for f in doc.fittings.values() if f.kind == kind]
+
+
+def _items(ev: Evaluation, kind: FittingKind) -> list[Hardware]:
+    return [h for h in ev.machining.hardware if h.kind == kind]
+
+
 def test_hinge_count_and_slide_length_rules() -> None:
     assert [fitting.hinge_count(h) for h in (600, 900, 1200, 2000, 2400)] == [2, 2, 3, 4, 5]
     assert fitting.slide_length(372) == 350
@@ -48,7 +56,7 @@ def test_hinge_count_and_slide_length_rules() -> None:
 def test_door_gets_hinges_on_the_left_side() -> None:
     doc = build_korpus()
     (door,), ev = _add(doc, _plan(doc, front.FrontKind.DOOR))
-    (hinge,) = doc.fittings.values()
+    (hinge,) = _kind(doc, FittingKind.HINGE)
     side = board_id(doc, "Seite_links")
     assert (hinge.kind, hinge.part_id, hinge.carrier_id) == (FittingKind.HINGE, door, side)
     assert not ev.machining.errors
@@ -67,7 +75,7 @@ def test_door_gets_hinges_on_the_left_side() -> None:
     assert all(h.center[0] == pytest.approx(18) for h in plate)  # inner face of the side
     assert all(h.center[1] == pytest.approx(37) for h in plate)
     assert plate[1].center[2] - plate[0].center[2] == pytest.approx(32)
-    (item,) = ev.machining.hardware
+    (item,) = _items(ev, FittingKind.HINGE)
     assert item.quantity == 2
     assert hardware_label(item) == "Topfband 35 mm mit Montageplatte"
 
@@ -75,10 +83,10 @@ def test_door_gets_hinges_on_the_left_side() -> None:
 def test_pair_of_doors_hinges_on_both_sides() -> None:
     doc = build_korpus()
     (door,), ev = _add(doc, _plan(doc, front.FrontKind.DOOR, whole=True, leaves=2))
-    carriers = {f.carrier_id for f in doc.fittings.values()}
+    carriers = {f.carrier_id for f in _kind(doc, FittingKind.HINGE)}
     assert carriers == {board_id(doc, "Seite_links"), board_id(doc, "Seite_rechts")}
     assert not ev.machining.errors
-    (item,) = ev.machining.hardware
+    (item,) = _items(ev, FittingKind.HINGE)
     assert item.quantity == 2 * 4  # 1797 mm high: four hinges per leaf
     right_leaf = ev.boards[door].instance_origins()[1]
     cups = _holes(ev, door, 35, copy=1)
@@ -89,7 +97,7 @@ def test_pair_of_doors_hinges_on_both_sides() -> None:
 def test_hinge_on_the_right_and_swapped_parts() -> None:
     doc = build_korpus()
     _add(doc, _plan(doc, front.FrontKind.DOOR, hinge_right=True))
-    (hinge,) = doc.fittings.values()
+    (hinge,) = _kind(doc, FittingKind.HINGE)
     assert hinge.carrier_id == board_id(doc, "Seite_rechts")
     # door and side swapped: the parts lie the wrong way
     hinge.part_id, hinge.carrier_id = hinge.carrier_id, hinge.part_id
@@ -98,7 +106,7 @@ def test_hinge_on_the_right_and_swapped_parts() -> None:
     doc.set_fitting_param(hinge.id, "cup_depth", 20)
     ev = _evaluate(doc)
     assert ev.machining.errors[hinge.id] == JointErrorCode.TOO_DEEP
-    assert not ev.machining.hardware
+    assert not _items(ev, FittingKind.HINGE)
 
 
 @pytest.mark.parametrize("drawers", [1, 2])
@@ -106,11 +114,11 @@ def test_drawer_slides_on_both_sides(drawers: int) -> None:
     doc = build_korpus()
     ids, ev = _add(doc, _plan(doc, front.FrontKind.DRAWER, drawers=drawers))
     assert not ev.machining.errors
-    assert {(f.kind, f.part_id) for f in doc.fittings.values()} == {
+    assert {(f.kind, f.part_id) for f in _kind(doc, FittingKind.SLIDE)} == {
         (FittingKind.SLIDE, ids[2]),
         (FittingKind.SLIDE, ids[3]),
     }
-    (item,) = ev.machining.hardware
+    (item,) = _items(ev, FittingKind.SLIDE)
     depth = ev.boards[ids[2]].size[1]
     assert item.length == fitting.slide_length(depth)
     assert item.quantity == 2 * drawers
@@ -168,10 +176,10 @@ def test_fittings_go_with_their_boards(tmp_path: Path) -> None:
     assert not sdz.from_dict(sdz.migrate(data)).fittings
     # copying door and side copies the hinge; deleting the side removes it
     copies = doc.duplicate([door, side])
-    assert len(doc.fittings) == 4
+    assert len(doc.fittings) == 6  # hinge, handle and pins twice
     assert {f.part_id for f in doc.fittings.values()} >= set(copies)
     doc.delete([side], {})
-    assert len(doc.fittings) == 2
+    assert len(doc.fittings) == 4
     assert all(side not in f.board_ids() for f in doc.fittings.values())
 
 

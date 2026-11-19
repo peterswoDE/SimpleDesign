@@ -174,6 +174,7 @@ def fitting_kind_label(kind: FittingKind) -> str:
         FittingKind.HINGE: _tr("Topfband"),
         FittingKind.SLIDE: _tr("Schubkastenschiene"),
         FittingKind.SHELF_PINS: _tr("Lochreihe"),
+        FittingKind.HANDLE: _tr("Griff"),
     }
     return labels[kind]
 
@@ -200,6 +201,12 @@ def fitting_param_label(name: str) -> str:
         "spacing": _tr("Lochabstand"),
         "first": _tr("Erstes Loch über Unterkante"),
         "last": _tr("Letztes Loch unter Oberkante"),
+        "hole_spacing": _tr("Bohrabstand (0 = Knopf)"),
+        "edge_distance": _tr("Abstand zur freien Kante"),
+        "top_distance": _tr("Unter Oberkante (0 = Mitte)"),
+        "screw_diameter": _tr("Schraubenloch"),
+        "grip_diameter": _tr("Griffstärke"),
+        "projection": _tr("Griffhöhe"),
     }
     return labels[name]
 
@@ -209,6 +216,10 @@ def hardware_label(item: Hardware) -> str:
         return _tr("Topfband {d} mm mit Montageplatte").format(d=number(item.diameter))
     if item.kind == FittingKind.SLIDE:
         return _tr("Schubkastenschiene NL {l} mm").format(l=number(item.length))
+    if item.kind == FittingKind.HANDLE:
+        if item.length <= 0:
+            return _tr("Möbelknopf")
+        return _tr("Möbelgriff BA {l} mm").format(l=number(item.length))
     if isinstance(item.kind, FittingKind):
         return fitting_kind_label(item.kind)
     return _tr("{kind} {d} × {l} mm").format(

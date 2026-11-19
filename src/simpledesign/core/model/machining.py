@@ -15,7 +15,7 @@ the model stays valid, as with formula errors.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -539,6 +539,38 @@ _SLIDE_REACH = 50.0  # mm: gap between drawer side and carcass side
 _PLATE_PITCH = 16.0  # mounting plate holes: 32 mm apart, around the cup height
 
 type _FittingHole = tuple[_Instance, Hole]
+# simplified metal parts for the 3D view: owner, box lo / hi, cylinder axis (-1: box)
+type _Solid = tuple[_Instance, Vec3, Vec3, int]
+
+
+@dataclass(frozen=True, slots=True)
+class HardwareSolid:
+    """A fitting part as a box (``axis`` -1) or a cylinder along ``axis``
+    filling the box ``lo``..``hi``; it belongs to (moves with) copy ``copy``
+    of board ``board_id``."""
+
+    fitting_id: str
+    kind: FittingKind
+    board_id: str
+    copy: int
+    lo: Vec3
+    hi: Vec3
+    axis: int = -1
+
+
+def _box(a: Iterable[float], b: Iterable[float]) -> tuple[Vec3, Vec3]:
+    pairs = list(zip(a, b, strict=True))
+    return _vec([min(p) for p in pairs]), _vec([max(p) for p in pairs])
+
+
+def _solid(
+    solids: list[_Solid] | None, owner: _Instance, a: Iterable[float], b: Iterable[float], axis: int
+) -> None:
+    if solids is not None:
+        lo, hi = _box(a, b)
+        solids.append((owner, lo, hi, axis))
+
+
 type _HardwareKey = tuple[JointKind | FittingKind, float, float]
 
 
@@ -581,7 +613,10 @@ def _check_fitting_params(fitting: Fitting) -> None:
 
 
 def _plan_hinge(
-    f: Fitting, doors: list[_Instance], carriers: list[_Instance]
+    f: Fitting,
+    doors: list[_Instance],
+    carriers: list[_Instance],
+    solids: list[_Solid] | None = None,
 ) -> tuple[list[_FittingHole], int]:
     pairs = []
     for c in carriers:
@@ -624,6 +659,29 @@ def _plan_hinge(
             z = d.lo[Z] + pos
             cup = _point(x=cup_x, y=cup_y, z=z)
             holes.append((d, Hole(cup, Y, cup_dir, f.param("cup_diameter"), f.param("cup_depth"))))
+            r = f.param("cup_diameter") / 2
+            inward = -plate_dir  # from the carrier face into the cabinet
+            _solid(  # the cup, standing a little out of the door
+                solids,
+                d,
+                (cup_x - r, cup_y - cup_dir * 2.0, z - r),
+                (cup_x + r, cup_y + cup_dir * (f.param("cup_depth") - 1.0), z + r),
+                Y,
+            )
+            _solid(  # the arm from the cup to the plate
+                solids,
+                d,
+                (cup_x, cup_y, z - 8.0),
+                (plate_x + inward * 14.0, plate_y + 20.0, z + 8.0),
+                -1,
+            )
+            _solid(  # the mounting plate on the carrier
+                solids,
+                c,
+                (plate_x, plate_y - 10.0, z - 26.0),
+                (plate_x + inward * 4.0, plate_y + 10.0, z + 26.0),
+                -1,
+            )
             for dz in (-_PLATE_PITCH, _PLATE_PITCH):
                 if not (c.lo[Z] < z + dz < c.hi[Z] and c.lo[Y] < plate_y < c.hi[Y]):
                     raise _PlanError(JointErrorCode.NO_CONTACT)
@@ -640,7 +698,10 @@ def _plan_hinge(
 
 
 def _plan_slide(
-    f: Fitting, parts: list[_Instance], carriers: list[_Instance]
+    f: Fitting,
+    parts: list[_Instance],
+    carriers: list[_Instance],
+    solids: list[_Solid] | None = None,
 ) -> tuple[list[_FittingHole], dict[float, int]]:
     holes: list[_FittingHole] = []
     lengths: dict[float, int] = {}
@@ -674,6 +735,12 @@ def _plan_slide(
         c_plane, c_dir = (c.hi[X], -1) if carrier_left else (c.lo[X], 1)
         p_plane, p_dir = (p.lo[X], 1) if carrier_left else (p.hi[X], -1)
         z = _centre(p, Z)
+        middle = (c_plane + p_plane) / 2
+        if abs(c_plane - p_plane) < 4.0:  # no gap: show the rails anyway
+            middle = c_plane - c_dir * 2.0
+        rail = (p.lo[Y], p.lo[Y] + length)
+        _solid(solids, c, (c_plane, rail[0] + 5.0, z - 20.0), (middle, rail[1], z + 20.0), -1)
+        _solid(solids, p, (middle, rail[0], z - 15.0), (p_plane, rail[1] - 5.0, z + 15.0), -1)
         for offset in offsets:
             y = p.lo[Y] + offset
             if not c.lo[Y] < y < c.hi[Y]:
@@ -706,6 +773,73 @@ def _plan_slide(
     if not lengths:
         raise _PlanError(JointErrorCode.NO_CONTACT)
     return holes, lengths
+
+
+def _plan_handle(
+    f: Fitting,
+    fronts: list[_Instance],
+    hinge_carriers: list[_Instance],
+    solids: list[_Solid] | None = None,
+) -> tuple[list[_FittingHole], int]:
+    holes: list[_FittingHole] = []
+    spacing = f.param("hole_spacing")
+    for p in fronts:
+        hinged: tuple[float, _Instance] | None = None
+        for c in hinge_carriers:
+            if not _overlaps(c, p, Z):
+                continue
+            cx = _centre(c, X)
+            distance = min(abs(p.lo[X] - cx), abs(p.hi[X] - cx))
+            if distance <= _HINGE_REACH and (hinged is None or distance < hinged[0]):
+                hinged = (distance, c)
+        outward = -1  # fronts look to -Y unless the hinges say otherwise
+        z = _centre(p, Z)
+        if f.param("top_distance") > 0:
+            z = p.hi[Z] - f.param("top_distance")
+        if hinged is not None:  # door: at the free edge, vertical
+            c = hinged[1]
+            if _centre(c, Y) < _centre(p, Y):
+                outward = 1
+            left = _centre(c, X) < _centre(p, X)
+            edge = f.param("edge_distance")
+            x = p.hi[X] - edge if left else p.lo[X] + edge
+            along = Z
+        else:  # drawer front: in the middle, horizontal
+            x = _centre(p, X)
+            along = X
+        centre = [x, 0.0, z]
+        ends = [list(centre)]
+        if spacing > 0:
+            ends = [list(centre), list(centre)]
+            ends[0][along] -= spacing / 2
+            ends[1][along] += spacing / 2
+        if any(not p.lo[k] < e[k] < p.hi[k] for e in ends for k in (X, Z)):
+            raise _PlanError(JointErrorCode.INVALID_VALUE)
+        face = p.lo[Y] if outward < 0 else p.hi[Y]
+        for e in ends:
+            point = _point(x=e[X], y=face, z=e[Z])
+            hole = Hole(point, Y, -outward, f.param("screw_diameter"), p.extent(Y))
+            holes.append((p, hole))
+        r = f.param("grip_diameter") / 2
+        top = face + outward * f.param("projection")
+        if spacing <= 0:  # knob
+            _solid(solids, p, (x - r, face, z - r), (x + r, top, z + r), Y)
+            continue
+        post = r * 0.7
+        for e in ends:
+            _solid(
+                solids,
+                p,
+                (e[X] - post, face, e[Z] - post),
+                (e[X] + post, top - outward * r, e[Z] + post),
+                Y,
+            )
+        lo = [x - r, top - outward * 2 * r, z - r]
+        hi = [x + r, top, z + r]
+        lo[along] = ends[0][along] - 20.0
+        hi[along] = ends[1][along] + 20.0
+        _solid(solids, p, lo, hi, along)
+    return holes, len(fronts)
 
 
 def _plan_shelf_pins(
@@ -755,10 +889,27 @@ def _plan_shelf_pins(
     return holes
 
 
+def _hinge_carriers(
+    f: Fitting, others: Iterable[Fitting], instances: Mapping[str, list[_Instance]]
+) -> list[_Instance]:
+    """Instances of the sides the hinges of ``f``'s part are on."""
+    return [
+        i
+        for h in others
+        if h.kind == FittingKind.HINGE and h.part_id == f.part_id and h.carrier_id in instances
+        for i in instances[h.carrier_id]  # type: ignore[index]
+    ]
+
+
 def _plan_fitting(
-    f: Fitting, instances: Mapping[str, list[_Instance]], boards: Mapping[str, BoardState]
+    f: Fitting,
+    instances: Mapping[str, list[_Instance]],
+    boards: Mapping[str, BoardState],
+    others: Iterable[Fitting] = (),
+    solids: list[_Solid] | None = None,
 ) -> tuple[list[_FittingHole], dict[_HardwareKey, int]]:
-    """Holes of one fitting and its hardware (raises _PlanError)."""
+    """Holes of one fitting and its hardware (raises _PlanError); ``others``
+    are the document's fittings (a handle looks for its door's hinges)."""
     ids = f.board_ids()
     if any(i not in boards for i in ids):
         raise _PlanError(JointErrorCode.NO_CONTACT)
@@ -767,36 +918,70 @@ def _plan_fitting(
     _check_fitting_params(f)
     part = boards[f.part_id].orientation.thickness_axis.position
     if f.kind == FittingKind.SHELF_PINS:
-        others = [o for items in instances.values() for o in items]
-        return _plan_shelf_pins(f, instances[f.part_id], part, others), {}
+        everything = [o for items in instances.values() for o in items]
+        return _plan_shelf_pins(f, instances[f.part_id], part, everything), {}
+    if f.kind == FittingKind.HANDLE:
+        if part != Y:
+            raise _PlanError(JointErrorCode.ORIENTATION)
+        carriers = _hinge_carriers(f, others, instances)
+        holes, n = _plan_handle(f, instances[f.part_id], carriers, solids)
+        return holes, {(FittingKind.HANDLE, 0.0, f.param("hole_spacing")): n}
     assert f.carrier_id is not None
     carrier = boards[f.carrier_id].orientation.thickness_axis.position
     if f.kind == FittingKind.HINGE:
         if part != Y or carrier != X:
             raise _PlanError(JointErrorCode.ORIENTATION)
-        holes, cups = _plan_hinge(f, instances[f.part_id], instances[f.carrier_id])
+        holes, cups = _plan_hinge(f, instances[f.part_id], instances[f.carrier_id], solids)
         return holes, {(FittingKind.HINGE, f.param("cup_diameter"), 0.0): cups}
     if part != X or carrier != X:
         raise _PlanError(JointErrorCode.ORIENTATION)
-    holes, lengths = _plan_slide(f, instances[f.part_id], instances[f.carrier_id])
+    holes, lengths = _plan_slide(f, instances[f.part_id], instances[f.carrier_id], solids)
     return holes, {(FittingKind.SLIDE, 0.0, length): n for length, n in lengths.items()}
 
 
-def fitting_holes(boards: Mapping[str, BoardState], fitting: Fitting) -> list[tuple[str, Hole]]:
-    """World holes ``fitting`` would drill (for previews; empty if it cannot be built)."""
-    instances = {
+def _instances(boards: Mapping[str, BoardState]) -> dict[str, list[_Instance]]:
+    return {
         board_id: [
             _Instance(list(origin), [origin[i] + state.size[i] for i in range(3)])
             for origin in state.instance_origins()
         ]
         for board_id, state in boards.items()
     }
+
+
+def fitting_holes(
+    boards: Mapping[str, BoardState], fitting: Fitting, others: Iterable[Fitting] = ()
+) -> list[tuple[str, Hole]]:
+    """World holes ``fitting`` would drill (for previews; empty if it cannot be built)."""
+    instances = _instances(boards)
     owner = {id(i): board_id for board_id, items in instances.items() for i in items}
     try:
-        holes, _hardware = _plan_fitting(fitting, instances, boards)
+        holes, _hardware = _plan_fitting(fitting, instances, boards, others)
     except _PlanError:
         return []
     return [(owner[id(instance)], hole) for instance, hole in holes]
+
+
+def hardware_solids(
+    boards: Mapping[str, BoardState], fittings_: Iterable[Fitting]
+) -> list[HardwareSolid]:
+    """Simplified metal parts of all fittings that can be built (3D view)."""
+    instances = _instances(boards)
+    owner = {
+        id(i): (board_id, k) for board_id, items in instances.items() for k, i in enumerate(items)
+    }
+    every = list(fittings_)
+    result: list[HardwareSolid] = []
+    for f in every:
+        solids: list[_Solid] = []
+        try:
+            _plan_fitting(f, instances, boards, every, solids)
+        except _PlanError:
+            continue
+        for instance, lo, hi, axis in solids:
+            board_id, copy = owner[id(instance)]
+            result.append(HardwareSolid(f.id, f.kind, board_id, copy, lo, hi, axis))
+    return result
 
 
 def _sketch_feature(state: BoardState, origin: Vec3, sketch: SketchFeature) -> Feature:
@@ -876,7 +1061,7 @@ def compute_machining(
     hardware: dict[_HardwareKey, int] = dict(joint_hardware)
     for fitting in doc.fittings.values():
         try:
-            holes, used = _plan_fitting(fitting, instances, boards)
+            holes, used = _plan_fitting(fitting, instances, boards, doc.fittings.values())
         except _PlanError as failure:
             result.errors[fitting.id] = failure.code
             continue

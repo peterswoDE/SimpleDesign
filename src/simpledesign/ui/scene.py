@@ -47,7 +47,7 @@ from simpledesign.core.geometry.mesh import part_mesh
 from simpledesign.core.geometry.placement import world_bounds
 from simpledesign.core.geometry.section import SectionPlane, section_cap
 from simpledesign.core.model import fit, transform
-from simpledesign.core.model.machining import PartShape
+from simpledesign.core.model.machining import HardwareSolid, PartShape, hardware_solids
 from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import add_offset
 from simpledesign.ui.texts import number
@@ -80,6 +80,9 @@ FLOOR_DRAG_MIN_Z = 0.35
 
 type Size = tuple[float, float, float]
 type Point2 = tuple[float, float]
+
+
+HARDWARE_COLOR = "#a7adb4"  # brushed steel
 
 
 def _rgb(color: str) -> tuple[float, float, float]:
@@ -189,6 +192,12 @@ class Scene(QObject):
         self._clip = vtkPlane()
         self._show_collisions = False
         self.collisions: list[Collision] = []
+        # fittings (hinges, slides, handles) as simple metal bodies
+        self._show_hardware = True
+        self.hardware: list[tuple[HardwareSolid, vtkActor]] = []
+        self._hardware_pool: list[vtkActor] = []
+        self._hardware_mappers: dict[tuple[int, Vec3], vtkPolyDataMapper] = {}
+        self._solids_of: tuple[object, list[HardwareSolid]] | None = None
         self._collision_key: tuple[int, frozenset[str]] | None = None
 
         self._create_overlay()
@@ -304,6 +313,7 @@ class Scene(QObject):
         plane = self._section
         mappers = [m for pair in self._meshes.values() for m in pair]
         mappers.append(self._collision_mapper)
+        mappers.extend(self._hardware_mappers.values())
         for mapper in mappers:
             mapper.RemoveAllClippingPlanes()
         if plane is None:
@@ -500,11 +510,117 @@ class Scene(QObject):
                 self.renderer.RemoveActor(face)
                 self.renderer.RemoveActor(edge)
             del self._pool[used:]
+        self._update_hardware()
         self._update_collisions(set() if self.exploded else set(self._board_actors))
         if self._section is not None:
             self._update_section()
         self._place_gizmo()
+        if self.tool is not None:
+            self.tool.scene_rebuilt()
         self.viewport.render()
+
+    # ================================================================ hardware
+    @property
+    def show_hardware(self) -> bool:
+        return self._show_hardware
+
+    @show_hardware.setter
+    def show_hardware(self, on: bool) -> None:
+        if on != self._show_hardware:
+            self._show_hardware = on
+            self.rebuild()
+
+    def hardware_solids(self) -> list[HardwareSolid]:
+        """Metal parts of all fittings (cached per evaluation)."""
+        evaluation = self.controller.evaluation
+        if self._solids_of is None or self._solids_of[0] is not evaluation:
+            solids = hardware_solids(evaluation.boards, self.controller.doc.fittings.values())
+            self._solids_of = (evaluation, solids)
+        return self._solids_of[1]
+
+    def _hardware_mapper(self, solid: HardwareSolid) -> vtkPolyDataMapper:
+        size = (
+            round(solid.hi[0] - solid.lo[0], 2),
+            round(solid.hi[1] - solid.lo[1], 2),
+            round(solid.hi[2] - solid.lo[2], 2),
+        )
+        key = (solid.axis, size)
+        if key not in self._hardware_mappers:
+            if solid.axis < 0:
+                mesh = pv.Box(bounds=(0.0, size[0], 0.0, size[1], 0.0, size[2]))
+            else:
+                direction = [0.0, 0.0, 0.0]
+                direction[solid.axis] = 1.0
+                others = [size[i] for i in range(3) if i != solid.axis]
+                mesh = pv.Cylinder(
+                    center=(size[0] / 2, size[1] / 2, size[2] / 2),
+                    direction=direction,
+                    radius=min(others) / 2,
+                    height=size[solid.axis],
+                    resolution=24,
+                )
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputData(mesh)
+            if self._section is not None:
+                mapper.AddClippingPlane(self._clip)
+            self._hardware_mappers[key] = mapper
+        return self._hardware_mappers[key]
+
+    def _update_hardware(self) -> None:
+        self.hardware = []
+        if len(self._hardware_mappers) > 256:
+            self._hardware_mappers.clear()
+        used = 0
+        if self._show_hardware:
+            for solid in self.hardware_solids():
+                if solid.board_id not in self._board_actors:
+                    continue  # its part is hidden
+                if used == len(self._hardware_pool):
+                    actor = vtkActor()
+                    actor.PickableOff()
+                    prop = actor.GetProperty()
+                    prop.SetColor(*_rgb(HARDWARE_COLOR))
+                    prop.SetAmbient(0.3)
+                    prop.SetDiffuse(0.6)
+                    prop.SetSpecular(0.6)
+                    prop.SetSpecularPower(30)
+                    self.renderer.AddActor(actor)
+                    self._hardware_pool.append(actor)
+                actor = self._hardware_pool[used]
+                used += 1
+                actor.SetMapper(self._hardware_mapper(solid))
+                moved = self._offsets.get(solid.board_id)
+                d = moved[solid.copy] if moved else (0.0, 0.0, 0.0)
+                actor.SetPosition(solid.lo[0] + d[0], solid.lo[1] + d[1], solid.lo[2] + d[2])
+                actor.SetUserTransform(None)
+                actor.VisibilityOn()
+                self.hardware.append((solid, actor))
+        for actor in self._hardware_pool[used:]:
+            actor.VisibilityOff()
+
+    def instance_actors(self, board_id: str, copy: int) -> list[vtkActor]:
+        """Face, edge and hardware actors of one copy of a board."""
+        result: list[vtkActor] = []
+        pairs = self._board_actors.get(board_id, [])
+        if copy < len(pairs):
+            result.extend(pairs[copy])
+        result.extend(a for s, a in self.hardware if s.board_id == board_id and s.copy == copy)
+        return result
+
+    def instance_at(self, x: int, y: int) -> tuple[str, int] | None:
+        """Board and copy under the pointer."""
+        if not self._picker.Pick(x, y, 0, self.renderer):
+            return None
+        actor = self._picker.GetActor()
+        if actor is None:
+            return None
+        board_id = self._actor_board.get(id(actor))
+        if board_id is None:
+            return None
+        for copy, (face, _edge) in enumerate(self._board_actors.get(board_id, [])):
+            if face is actor:
+                return board_id, copy
+        return None
 
     def _pooled(self, index: int) -> tuple[vtkActor, vtkActor]:
         if index == len(self._pool):
