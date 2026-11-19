@@ -145,6 +145,16 @@ def test_front_tool_in_window(qtbot: QtBot) -> None:
         assert tool.type_key(Qt.Key.Key_L, "l")
         assert c.front_settings.mounting == front.Mounting.INSET
         assert not tool.type_key(Qt.Key.Key_G, "g")  # whole cabinet: doors only
+        # the tool panel: title, hint and options follow keys and edits
+        panel = win.tool_panel
+        assert panel.isVisible() and panel.title.text() == tool.title()
+        assert "Schublade" in panel.hint.text()
+        options = tool.options
+        assert options is not None
+        assert options.drawers.value() == 2 and options.mounting.currentIndex() == 1
+        options.drawers.setValue(3)
+        assert c.front_settings.drawers == 3
+        options.drawers.setValue(2)
         count = c.undo_stack.count()
         assert tool.press(x, y, False) is True
         assert c.undo_stack.count() == count + 1
@@ -152,6 +162,8 @@ def test_front_tool_in_window(qtbot: QtBot) -> None:
         assert c.doc.boards[new].name == "Schubladenfront"
         assert len(c.evaluation.boards[new].instance_origins()) == 2
         assert not c.evaluation.errors
+        panel.done_button.click()
+        assert win.scene.tool is None and not panel.isVisible()
     finally:
         win.controller.undo_stack.setClean()
         win.close()

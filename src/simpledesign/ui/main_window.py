@@ -59,6 +59,7 @@ from simpledesign.ui.settings_dialog import (
 from simpledesign.ui.shortcut_labels import show_shortcut
 from simpledesign.ui.sketch_editor import NewPartEditor, new_sketch_part
 from simpledesign.ui.templates_dialog import InsertTemplateDialog
+from simpledesign.ui.tool_panel import ToolPanel
 from simpledesign.ui.tools import (
     ExtendTool,
     FaceMeasureTool,
@@ -84,6 +85,7 @@ class MainWindow(QMainWindow):
         self.viewport = Viewport(self)
         self.setCentralWidget(self.viewport)
         self.scene = Scene(self.viewport, self.controller)
+        self.tool_panel = ToolPanel(self.scene, self.viewport, self)
 
         self._create_docks()
         self._create_actions()
@@ -1036,6 +1038,8 @@ class MainWindow(QMainWindow):
         self.selection_info.setText(text)
 
     def _show_status(self, text: str) -> None:
+        if self.scene.tool is not None:
+            text = ""  # the tool panel shows the hints of a tool
         if text:
             self.statusBar().showMessage(text)
         else:

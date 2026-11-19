@@ -154,7 +154,7 @@ def test_measure_distance_between_faces(window: MainWindow) -> None:
     assert tool.first is not None and tool.first.value == pytest.approx(0)
     assert tool.first_face.GetVisibility()
     tool.hover(*back)
-    assert "400" in window.statusBar().currentMessage()
+    assert "400" in window.tool_panel.hint.text()
     assert tool.press(*back, False)
     assert tool.result == pytest.approx(400)
     assert tool.first is None
@@ -175,7 +175,7 @@ def test_set_distance_moves_the_second_part(window: MainWindow) -> None:
     assert tool.press(*_screen(window, (400, 400, 900)), False)  # back panel: stays
     assert tool.press(*_screen(window, (400, 0, 9)), False)  # bottom: moves
     assert tool.target is not None
-    assert "400" in window.statusBar().currentMessage()
+    assert "400" in window.tool_panel.hint.text()
     count = c.undo_stack.count()
     for char in "380":
         assert tool.type_key(0, char)

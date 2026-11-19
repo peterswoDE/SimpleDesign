@@ -13,6 +13,14 @@ from typing import TYPE_CHECKING
 
 import pyvista as pv
 from PySide6.QtCore import QCoreApplication, Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QSpinBox,
+    QWidget,
+)
 from vtkmodules.vtkFiltersCore import vtkAppendPolyData
 from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
@@ -62,6 +70,14 @@ class Tool:
 
     def finish(self) -> None: ...
 
+    def title(self) -> str:
+        """Heading of the tool panel."""
+        return _tr("Werkzeug")
+
+    def options_widget(self) -> QWidget | None:
+        """Settings shown in the tool panel (None: only the hint)."""
+        return None
+
     def press(self, x: int, y: int, ctrl: bool) -> bool:
         return False
 
@@ -98,6 +114,9 @@ class InsertTool(Tool):
         self.typed = ""
         self._last: tuple[int, int] | None = None
         self.preview = _box_actor()
+
+    def title(self) -> str:
+        return _tr("{0} einpassen").format(_tr(fit.BASE_NAMES[self.kind]))
 
     def start(self) -> None:
         self.scene.renderer.AddActor(self.preview)
@@ -250,18 +269,35 @@ class FrontTool(Tool):
         self.plan: front.FrontPlan | None = None
         self._last: tuple[int, int] | None = None
         self.preview = _box_actor()
+        self.options: _FrontOptions | None = None
 
     @property
     def settings(self) -> front.FrontSettings:
         return self.scene.controller.front_settings
+
+    def title(self) -> str:
+        if self.kind == front.FrontKind.DOOR:
+            return _tr("Tür einpassen")
+        return _tr("Schubladen einpassen")
+
+    def options_widget(self) -> QWidget:
+        self.options = _FrontOptions(self)
+        return self.options
 
     def start(self) -> None:
         self.scene.renderer.AddActor(self.preview)
         self._show(None)
 
     def finish(self) -> None:
+        self.options = None  # the panel deletes the widget
         self.scene.renderer.RemoveActor(self.preview)
         self.scene.viewport.render()
+
+    def settings_changed(self) -> None:
+        """Settings changed (keys or panel): new preview and panel values."""
+        if self.options is not None:
+            self.options.sync()
+        self._show(self.plan_at(*self._last) if self._last is not None else None)
 
     def _thickness(self, material_id: str) -> float:
         doc = self.scene.controller.doc
@@ -380,8 +416,113 @@ class FrontTool(Tool):
             s.drawers = int(text)
         else:
             return False
-        self._show(self.plan_at(*self._last) if self._last is not None else None)
+        self.settings_changed()
         return True
+
+
+class _FrontOptions(QWidget):
+    """Door / drawer settings in the tool panel."""
+
+    def __init__(self, tool: FrontTool) -> None:
+        super().__init__()
+        self.tool = tool
+        self._syncing = False
+        door = tool.kind == front.FrontKind.DOOR
+        form = QFormLayout(self)
+        form.setContentsMargins(0, 0, 0, 0)
+        self.mounting = QComboBox()
+        self.mounting.addItem(_tr("aufliegend"), front.Mounting.OVERLAY)
+        self.mounting.addItem(_tr("einliegend"), front.Mounting.INSET)
+        self.mounting.setToolTip(_tr("Taste L"))
+        form.addRow(_tr("Montage:"), self.mounting)
+        self.gap = self._mm(0.0, 20.0, 0.5)
+        form.addRow(_tr("Fuge:"), self.gap)
+        self.leaves = QComboBox()
+        self.leaves.addItem(_tr("einflügelig"), 1)
+        self.leaves.addItem(_tr("zweiflügelig"), 2)
+        self.leaves.setToolTip(_tr("Tasten 1 / 2"))
+        self.hinge = QComboBox()
+        self.hinge.addItem(_tr("links"), False)
+        self.hinge.addItem(_tr("rechts"), True)
+        self.hinge.setToolTip(_tr("Taste A"))
+        self.whole = QCheckBox(_tr("über das ganze Möbel"))
+        self.whole.setToolTip(_tr("Taste G: innere Teile übergehen"))
+        self.drawers = QSpinBox()
+        self.drawers.setRange(1, 9)
+        self.drawers.setToolTip(_tr("Tasten 1 bis 9"))
+        self.clearance = self._mm(0.0, 50.0, 0.5)
+        self.bottom_gap = self._mm(0.0, 200.0, 1.0)
+        self.top_gap = self._mm(0.0, 200.0, 1.0)
+        self.back_gap = self._mm(0.0, 200.0, 1.0)
+        if door:
+            form.addRow(_tr("Flügel:"), self.leaves)
+            form.addRow(_tr("Anschlag:"), self.hinge)
+            form.addRow("", self.whole)
+        else:
+            form.addRow(_tr("Anzahl:"), self.drawers)
+            form.addRow(_tr("Seitenluft (Auszug):"), self.clearance)
+            form.addRow(_tr("Luft unten:"), self.bottom_gap)
+            form.addRow(_tr("Luft oben:"), self.top_gap)
+            form.addRow(_tr("Luft hinten:"), self.back_gap)
+        for widget in (self.mounting, self.leaves, self.hinge, self.whole):
+            widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keys stay in the 3D view
+        self.sync()
+        self.mounting.currentIndexChanged.connect(self._apply)
+        self.leaves.currentIndexChanged.connect(self._apply)
+        self.hinge.currentIndexChanged.connect(self._apply)
+        self.whole.toggled.connect(self._apply)
+        for spin in (
+            self.gap,
+            self.drawers,
+            self.clearance,
+            self.bottom_gap,
+            self.top_gap,
+            self.back_gap,
+        ):
+            spin.valueChanged.connect(self._apply)
+
+    @staticmethod
+    def _mm(low: float, high: float, step: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(low, high)
+        spin.setSingleStep(step)
+        spin.setDecimals(1)
+        spin.setSuffix(" mm")
+        return spin
+
+    def sync(self) -> None:
+        s = self.tool.settings
+        self._syncing = True
+        try:
+            self.mounting.setCurrentIndex(self.mounting.findData(s.mounting))
+            self.gap.setValue(s.gap)
+            self.leaves.setCurrentIndex(self.leaves.findData(s.leaves))
+            self.hinge.setCurrentIndex(self.hinge.findData(s.hinge_right))
+            self.hinge.setEnabled(s.leaves == 1)
+            self.whole.setChecked(s.whole)
+            self.drawers.setValue(s.drawers)
+            self.clearance.setValue(s.slide_clearance)
+            self.bottom_gap.setValue(s.bottom_gap)
+            self.top_gap.setValue(s.top_gap)
+            self.back_gap.setValue(s.back_gap)
+        finally:
+            self._syncing = False
+
+    def _apply(self) -> None:
+        if self._syncing:
+            return
+        s = self.tool.settings
+        s.mounting = self.mounting.currentData()
+        s.gap = self.gap.value()
+        s.leaves = self.leaves.currentData()
+        s.hinge_right = self.hinge.currentData()
+        s.whole = self.whole.isChecked()
+        s.drawers = self.drawers.value()
+        s.slide_clearance = self.clearance.value()
+        s.bottom_gap = self.bottom_gap.value()
+        s.top_gap = self.top_gap.value()
+        s.back_gap = self.back_gap.value()
+        self.tool.settings_changed()
 
 
 def scene_shift(scene: Scene) -> bool:
@@ -397,6 +538,9 @@ class ShelfPinTool(Tool):
         self.target: tuple[str, int] | None = None  # board, face side
         self.holes = 0
         self.preview = _box_actor()
+
+    def title(self) -> str:
+        return _tr("Lochreihe")
 
     def start(self) -> None:
         self.scene.renderer.AddActor(self.preview)
@@ -503,6 +647,9 @@ class MeasureTool(Tool):
         self.marker.GetProperty().SetColor(1.0, 0.55, 0.0)
         self.marker.PickableOff()
         self.marker.VisibilityOff()
+
+    def title(self) -> str:
+        return _tr("Messen")
 
     def start(self) -> None:
         self.scene.overlay.AddActor(self.line)
@@ -676,6 +823,9 @@ class FaceMeasureTool(Tool):
         self.line.PickableOff()
         self.line.VisibilityOff()
 
+    def title(self) -> str:
+        return _tr("Flächen messen")
+
     # ------------------------------------------------------------------ texts
     def start_hint(self) -> str:
         return _tr("Flächen messen: erste Fläche klicken   (Esc: beenden)")
@@ -785,6 +935,9 @@ class SetDistanceTool(FaceMeasureTool):
         self.target: tuple[PickedFace, PickedFace] | None = None
         self.typed = ""
 
+    def title(self) -> str:
+        return _tr("Abstand setzen")
+
     def start_hint(self) -> str:
         return _tr("Abstand setzen: Bezugsfläche klicken (bleibt stehen)   (Esc: beenden)")
 
@@ -889,6 +1042,9 @@ _AXES = (Axis.X, Axis.Y, Axis.Z)
 class ExtendTool(FaceMeasureTool):
     """Bis Fläche ziehen: click the face of a part that should move, then a
     parallel face of another part - the face goes there and stays linked."""
+
+    def title(self) -> str:
+        return _tr("Bis Fläche ziehen")
 
     def start_hint(self) -> str:
         return _tr("Bis Fläche ziehen: Fläche des Teils klicken, die sich bewegt   (Esc: beenden)")
