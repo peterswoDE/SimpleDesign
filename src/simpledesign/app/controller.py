@@ -22,7 +22,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from simpledesign.core.io import sdz
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
-from simpledesign.core.model import arrange, backpanel, fit, transform
+from simpledesign.core.model import arrange, backpanel, fit, split, transform
 from simpledesign.core.model.document import Document, ref_key
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.joint import JointKind
@@ -511,6 +511,16 @@ class Controller(QObject):
         copies = self.execute(self.tr("Reihe kopieren"), change)
         self.set_selection(copies)
         return copies
+
+    def split_at(self, cutter_ids: Iterable[str]) -> list[str]:
+        """Split the parts the given parts pass through ("Auftrennen"); one undo
+        step. The given parts stay whole. Returns the new pieces."""
+        cutters = list(cutter_ids)
+        evaluation = self.evaluation
+        pieces = self.execute(
+            self.tr("Auftrennen"), lambda d: split.split_at(d, evaluation, cutters)
+        )
+        return pieces
 
     def delete(self, ids: Iterable[str]) -> None:
         """Delete; formulas elsewhere that use the deleted objects get fixed values."""

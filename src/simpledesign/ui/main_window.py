@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QStyle,
+    QToolBar,
     QWidget,
 )
 
@@ -45,6 +46,7 @@ from simpledesign.ui.settings_dialog import (
     ShortcutsDialog,
     apply_saved_shortcuts,
 )
+from simpledesign.ui.shortcut_labels import show_shortcut
 from simpledesign.ui.sketch_editor import NewPartEditor, new_sketch_part
 from simpledesign.ui.templates_dialog import InsertTemplateDialog
 from simpledesign.ui.tools import InsertTool, MeasureTool, Tool
@@ -177,7 +179,7 @@ class MainWindow(QMainWindow):
         self.action_redo.setIcon(icon(pixmap.SP_ArrowForward))
 
         self.action_add_board = QAction(self.tr("Brett"), self)
-        self.action_add_board.setToolTip(self.tr("Neues Brett (B)"))
+        self.action_add_board.setToolTip(self.tr("Neues Brett"))
         self.action_add_board.setShortcut(QKeySequence("B"))
         self.action_add_board.triggered.connect(self._add_board)
         self.action_add_group = QAction(self.tr("Gruppe"), self)
@@ -247,7 +249,7 @@ class MainWindow(QMainWindow):
         self.action_rotate_mode.setCheckable(True)
         self.action_rotate_mode.setShortcut(QKeySequence("R"))
         self.action_rotate_mode.setToolTip(
-            self.tr("Drehringe statt Pfeilen: Teil frei im Raum drehen (R)")
+            self.tr("Drehringe statt Pfeilen: Teil frei im Raum drehen")
         )
         self.action_rotate_mode.toggled.connect(lambda on: setattr(self.scene, "rotate_mode", on))
 
@@ -257,13 +259,13 @@ class MainWindow(QMainWindow):
         self.action_insert_divider = self._tool_action(
             self.tr("&Trennwand einpassen"),
             "D",
-            self.tr("Senkrechte Trennwand in ein Fach klicken (D)"),
+            self.tr("Senkrechte Trennwand in ein Fach klicken"),
             lambda: InsertTool(self.scene, fit.InsertKind.DIVIDER),
         )
         self.action_insert_shelf = self._tool_action(
             self.tr("&Fachboden einpassen"),
             "F",
-            self.tr("Fachboden in ein Fach klicken (F)"),
+            self.tr("Fachboden in ein Fach klicken"),
             lambda: InsertTool(self.scene, fit.InsertKind.SHELF),
         )
         self.action_insert_back = self._tool_action(
@@ -275,7 +277,7 @@ class MainWindow(QMainWindow):
         self.action_measure = self._tool_action(
             self.tr("&Messen"),
             "M",
-            self.tr("Abstand zwischen zwei Punkten messen (M)"),
+            self.tr("Abstand zwischen zwei Punkten messen"),
             lambda: MeasureTool(self.scene),
         )
         self.scene.tool_changed.connect(self._sync_tool_actions)
@@ -285,13 +287,26 @@ class MainWindow(QMainWindow):
         )
         self.action_seat_groove.triggered.connect(self.seat_in_groove)
 
+        self.action_split = QAction(self.tr("An Auswahl &auftrennen"), self)
+        self.action_split.setShortcut(QKeySequence("A"))
+        self.action_split.setToolTip(
+            self.tr(
+                "Teile, durch die die Auswahl hindurchgeht, an ihr auftrennen "
+                "(z. B. Fachböden an einer Trennwand). Die Auswahl bleibt ganz – "
+                "Fachboden wählen, um die Trennwand aufzutrennen."
+            )
+        )
+        self.action_split.triggered.connect(self.split_at_selection)
+
         self.action_array = QAction(self.tr("&Reihe kopieren…"), self)
         self.action_array.setToolTip(self.tr("Mehrere Kopien der Auswahl in einer Reihe"))
         self.action_array.triggered.connect(self.array_copy)
         self.action_isolate = QAction(self.tr("Auswahl &isolieren"), self)
         self.action_isolate.setCheckable(True)
         self.action_isolate.setShortcut(QKeySequence("I"))
-        self.action_isolate.setToolTip(self.tr("Nur die Auswahl zeigen (I: wieder alles)"))
+        self.action_isolate.setToolTip(
+            self.tr("Nur die Auswahl zeigen (noch einmal: wieder alles)")
+        )
         self.action_isolate.toggled.connect(self._isolate)
         self.action_xray = QAction(self.tr("&Röntgenansicht"), self)
         self.action_xray.setCheckable(True)
@@ -335,6 +350,7 @@ class MainWindow(QMainWindow):
             [tree.action_rename, tree.action_duplicate, tree.action_delete, tree.action_group]
         )
         edit_menu.addAction(self.action_array)
+        edit_menu.addAction(self.action_split)
 
         insert_menu = menu_bar.addMenu(self.tr("&Einfügen"))
         insert_menu.addActions(
@@ -352,6 +368,7 @@ class MainWindow(QMainWindow):
             [self.action_insert_divider, self.action_insert_shelf, self.action_insert_back]
         )
         insert_menu.addAction(self.action_seat_groove)
+        insert_menu.addAction(self.action_split)
 
         self.arrange_menu = menu_bar.addMenu(self.tr("An&ordnen"))
         self._fill_arrange_menu(self.arrange_menu)
@@ -391,32 +408,67 @@ class MainWindow(QMainWindow):
         help_menu.addAction(self.action_about)
 
     def _create_toolbar(self) -> None:
-        toolbar = self.addToolBar(self.tr("Werkzeuge"))
-        toolbar.setObjectName("toolbar_main")
-        toolbar.setMovable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        toolbar.addActions([self.action_new, self.action_open, self.action_save])
-        toolbar.addSeparator()
-        toolbar.addActions([self.action_undo, self.action_redo])
-        toolbar.addSeparator()
-        toolbar.addActions(
-            [
-                self.action_add_board,
-                self.action_add_sketch_part,
-                self.action_add_group,
-                self.action_add_parameter,
-                self.action_insert_template,
-            ]
-        )
-        toolbar.addSeparator()
-        toolbar.addActions(
-            [self.action_insert_divider, self.action_insert_shelf, self.action_insert_back]
-        )
-        toolbar.addSeparator()
-        toolbar.addActions([self.action_rotate_mode, self.action_measure])
-        toolbar.addActions([self.action_isolate, self.action_xray])
-        toolbar.addSeparator()
-        toolbar.addActions(list(self.view_actions.values()))
+        """Small titled tool groups in two rows; buttons show their shortcut."""
+        groups: list[tuple[str, str, list[QAction]] | None] = [
+            ("file", self.tr("Datei"), [self.action_new, self.action_open, self.action_save]),
+            ("edit", self.tr("Bearbeiten"), [self.action_undo, self.action_redo]),
+            (
+                "insert",
+                self.tr("Einfügen"),
+                [
+                    self.action_add_board,
+                    self.action_add_sketch_part,
+                    self.action_add_group,
+                    self.action_add_parameter,
+                    self.action_insert_template,
+                ],
+            ),
+            None,  # second row
+            (
+                "fit",
+                self.tr("Einpassen"),
+                [
+                    self.action_insert_divider,
+                    self.action_insert_shelf,
+                    self.action_insert_back,
+                    self.action_split,
+                ],
+            ),
+            ("tools", self.tr("Werkzeuge"), [self.action_rotate_mode, self.action_measure]),
+            (
+                "view",
+                self.tr("Ansicht"),
+                [self.action_isolate, self.action_xray, *self.view_actions.values()],
+            ),
+        ]
+        # shorter button labels: the group title says the rest
+        for action, short in (
+            (self.action_insert_divider, self.tr("Trennwand")),
+            (self.action_insert_shelf, self.tr("Fachboden")),
+            (self.action_insert_back, self.tr("Rückwand")),
+            (self.action_split, self.tr("Auftrennen")),
+            (self.action_isolate, self.tr("Isolieren")),
+            (self.action_xray, self.tr("Röntgen")),
+            (self.view_actions["iso"], self.tr("Iso")),
+        ):
+            action.setIconText(short)
+        self.toolbars: dict[str, QToolBar] = {}
+        for group in groups:
+            if group is None:
+                self.addToolBarBreak()
+                continue
+            name, title, actions = group
+            toolbar = self.addToolBar(title)
+            toolbar.setObjectName(f"toolbar_{name}")
+            toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            label = QLabel(title)
+            label.setObjectName("toolbar_title")
+            label.setStyleSheet("color: gray; font-size: 8pt; padding: 0 4px;")
+            toolbar.addWidget(label)
+            for action in actions:
+                toolbar.addAction(action)
+                show_shortcut(action)
+            self.toolbars[name] = toolbar
 
     # ------------------------------------------------------------------ editing
     def _target_group(self) -> str | None:
@@ -502,6 +554,7 @@ class MainWindow(QMainWindow):
         if self.controller.selection:
             menu.addActions([tree.action_rename, tree.action_duplicate, tree.action_delete])
             menu.addAction(self.action_array)
+            menu.addAction(self.action_split)
             menu.addAction(self.action_isolate)
             menu.addSeparator()
             menu.addActions([tree.action_toggle_visible, tree.action_transparent])
@@ -580,6 +633,20 @@ class MainWindow(QMainWindow):
         )
         dialog.open()
         return dialog
+
+    def split_at_selection(self) -> list[str]:
+        """Split the parts the selected parts pass through."""
+        cutters = [i for i in self.controller.selection if i in self.controller.doc.boards]
+        if not cutters:
+            self.statusBar().showMessage(self.tr("Bitte zuerst die trennenden Teile wählen"), 5000)
+            return []
+        pieces = self.controller.split_at(cutters)
+        if pieces:
+            text = self.tr("{n} neue Teilstücke").format(n=len(pieces))
+        else:
+            text = self.tr("Die Auswahl geht durch kein anderes Teil ganz hindurch")
+        self.statusBar().showMessage(text, 5000)
+        return pieces
 
     def _single_board(self) -> str | None:
         selection = self.controller.selection
