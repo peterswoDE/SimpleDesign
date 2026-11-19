@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSlider,
     QStyle,
+    QTabBar,
     QToolBar,
     QToolButton,
     QWidget,
@@ -74,6 +76,23 @@ from simpledesign.ui.tools import (
 from simpledesign.ui.tree_panel import TreePanel
 from simpledesign.ui.viewport import Viewport
 
+VIEWPORT_MIN_WIDTH = 320
+VIEWPORT_MIN_HEIGHT = 200
+# Saved panel layouts of an older version are not restored (version 1 could
+# leave the 3D view squeezed to nothing).
+LAYOUT_VERSION = 2
+_LEFT = Qt.DockWidgetArea.LeftDockWidgetArea
+_RIGHT = Qt.DockWidgetArea.RightDockWidgetArea
+
+
+@dataclass
+class _ListLayout:
+    """The layout before a cut list / cut plan tab took the room of the 3D view."""
+
+    dock: QDockWidget
+    size: int  # of its dock area
+    hidden: list[tuple[QDockWidget, Qt.DockWidgetArea, int, int]]  # dock, area, width, height
+
 
 class MainWindow(QMainWindow):
     def __init__(self, controller: Controller | None = None, parent: QWidget | None = None) -> None:
@@ -85,6 +104,8 @@ class MainWindow(QMainWindow):
 
         self.viewport = Viewport(self)
         self.setCentralWidget(self.viewport)
+        # never squeezed away by the panels (also not by an old saved layout)
+        self.viewport.setMinimumSize(VIEWPORT_MIN_WIDTH, VIEWPORT_MIN_HEIGHT)
         self.scene = Scene(self.viewport, self.controller)
         self.tool_panel = ToolPanel(self.scene, self.viewport, self)
 
@@ -151,9 +172,11 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.parameters_dock, self.cutlist_dock)
         self.tabifyDockWidget(self.cutlist_dock, self.cutplan_dock)
         self.parameters_dock.raise_()
-        # The cut list and cut plan need the space: no 3D view while one of
-        # them is the shown tab (docked, not floating).
+        # The cut list and cut plan need the space: while one of them is the
+        # shown tab (docked, not floating) its dock area takes the room of the
+        # 3D view; another tab gives the old size back.
         self._list_docks_shown: set[QDockWidget] = set()
+        self._lists_maximized: _ListLayout | None = None
         for dock in (self.cutlist_dock, self.cutplan_dock):
             dock.visibilityChanged.connect(
                 lambda visible, d=dock: self._list_dock_visibility(d, visible)
@@ -167,19 +190,86 @@ class MainWindow(QMainWindow):
             self._list_docks_shown.discard(dock)
         self._update_central()
 
-    def viewport_hidden_by_lists(self) -> bool:
-        return any(
-            not d.isFloating() and d.isVisible() and d in self._list_docks_shown
-            for d in (self.cutlist_dock, self.cutplan_dock)
+    def _shown_list_dock(self) -> QDockWidget | None:
+        return next(
+            (
+                d
+                for d in (self.cutlist_dock, self.cutplan_dock)
+                if not d.isFloating() and d.isVisible() and d in self._list_docks_shown
+            ),
+            None,
         )
 
+    def lists_maximized(self) -> bool:
+        return self._lists_maximized is not None
+
+    def _dock_orientation(self, dock: QDockWidget) -> Qt.Orientation:
+        area = self.dockWidgetArea(dock)
+        if area in (Qt.DockWidgetArea.LeftDockWidgetArea, Qt.DockWidgetArea.RightDockWidgetArea):
+            return Qt.Orientation.Horizontal
+        return Qt.Orientation.Vertical
+
+    def _tab_bar_size(self, dock: QDockWidget, orientation: Qt.Orientation) -> int:
+        """Size of the tab bar of ``dock``'s tab group (part of the dock area)."""
+        for bar in self.findChildren(QTabBar):
+            titles = [bar.tabText(i) for i in range(bar.count())]
+            if bar.parent() is self and bar.isVisible() and dock.windowTitle() in titles:
+                return bar.height() if orientation == Qt.Orientation.Vertical else bar.width()
+        return 0
+
     def _update_central(self) -> None:
-        hide = self.viewport_hidden_by_lists()
-        if hide == self.viewport.isHidden():
+        dock = self._shown_list_dock()
+        if (dock is None) == (self._lists_maximized is None):
             return
-        self.viewport.setVisible(not hide)
-        if not hide:
-            self.viewport.render()
+        if dock is None:
+            self._restore_list_docks()
+            return
+        orientation = self._dock_orientation(dock)
+        vertical = orientation == Qt.Orientation.Vertical
+        area = self.dockWidgetArea(dock)
+        size = (dock.height() if vertical else dock.width()) + self._tab_bar_size(dock, orientation)
+        # the panels beside the 3D view would keep a strip of it: away with them too
+        others = [
+            d
+            for d in self.findChildren(QDockWidget)
+            if d.isVisible()
+            and not d.isFloating()
+            and self.dockWidgetArea(d) != area
+            and d not in (self.cutlist_dock, self.cutplan_dock)
+        ]
+        self._lists_maximized = _ListLayout(
+            dock, size, [(d, self.dockWidgetArea(d), d.width(), d.height()) for d in others]
+        )
+        self.viewport.setMinimumSize(0, 0)
+        for d in others:
+            d.hide()
+        room = self.height() if vertical else self.width()
+        self.resizeDocks([dock], [room], orientation)
+
+    def _restore_list_docks(self) -> None:
+        layout = self._lists_maximized
+        if layout is None:
+            return
+        self._lists_maximized = None
+        for d, *_rest in layout.hidden:
+            d.show()
+        # one dock per call: Qt ignores a call with several docks of one column
+        done: set[Qt.DockWidgetArea] = set()
+        for d, area, width, height in layout.hidden:
+            side = area in (_LEFT, _RIGHT)
+            if area not in done:
+                done.add(area)
+                if side:
+                    self.resizeDocks([d], [width], Qt.Orientation.Horizontal)
+                else:
+                    self.resizeDocks([d], [height], Qt.Orientation.Vertical)
+            if side:
+                self.resizeDocks([d], [height], Qt.Orientation.Vertical)
+            else:
+                self.resizeDocks([d], [width], Qt.Orientation.Horizontal)
+        self.resizeDocks([layout.dock], [layout.size], self._dock_orientation(layout.dock))
+        self.viewport.setMinimumSize(VIEWPORT_MIN_WIDTH, VIEWPORT_MIN_HEIGHT)
+        self.viewport.render()
 
     def _add_dock(
         self, name: str, title: str, widget: QWidget, area: Qt.DockWidgetArea
@@ -1362,7 +1452,7 @@ class MainWindow(QMainWindow):
         if geometry is not None:
             self.restoreGeometry(geometry)
         if state is not None:
-            self.restoreState(state)
+            self.restoreState(state, LAYOUT_VERSION)  # an older layout: the default
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self.maybe_save():
@@ -1370,9 +1460,10 @@ class MainWindow(QMainWindow):
             return
         self.controller.autosave_timer.stop()
         self.controller.discard_recovery()  # clean exit: nothing to recover
+        self._restore_list_docks()  # save the normal layout, not the enlarged lists
         settings = QSettings()
         settings.setValue("window/geometry", self.saveGeometry())
-        settings.setValue("window/state", self.saveState())
+        settings.setValue("window/state", self.saveState(LAYOUT_VERSION))
         # pyvistaqt needs an explicit close to release the OpenGL render window.
         self.viewport.close()
         super().closeEvent(event)
