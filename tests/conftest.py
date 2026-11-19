@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 
 import pytest
-from PySide6.QtCore import QSettings, QStandardPaths
-from PySide6.QtWidgets import QColorDialog, QFileDialog, QMessageBox
+from PySide6.QtCore import QSettings, QStandardPaths, Qt
+from PySide6.QtWidgets import QColorDialog, QFileDialog, QMessageBox, QWidget
+
+# Test windows open far outside the desktop and never take the focus, so a test
+# run does not get in the way at the PC. SIMPLEDESIGN_SHOW_TESTS=1 shows them.
+# (QT_QPA_PLATFORM=offscreen is no option: VTK then renders into a 0x0 window.)
+OFF_DESKTOP = (-32000, -32000)
+_show = QWidget.show
+
+
+def _show_off_desktop(widget: QWidget) -> None:
+    if widget.isWindow():
+        widget.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        widget.move(*OFF_DESKTOP)
+    _show(widget)
+
+
+if not os.environ.get("SIMPLEDESIGN_SHOW_TESTS"):
+    QWidget.show = _show_off_desktop  # type: ignore[method-assign]
 
 
 @pytest.fixture(autouse=True)
