@@ -23,7 +23,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 from simpledesign.core.io import sdz
 from simpledesign.core.materials.edgeband import BandEdge, EdgeBand
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
-from simpledesign.core.model import arrange, backpanel, fit, front, split, transform
+from simpledesign.core.model import arrange, backpanel, fit, front, split, transform, variants
 from simpledesign.core.model.document import Document, ref_key
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.fitting import FittingKind
@@ -309,6 +309,29 @@ class Controller(QObject):
                 del d.fittings[fitting_id]
 
         self.execute(self.tr("Beschlag löschen"), change)
+
+    # ------------------------------------------------------------------ variants
+    def add_variant(self, name: str) -> bool:
+        """New variant from the current values (it becomes active). False if
+        the name is empty or taken."""
+        try:
+            self.execute(self.tr("Variante anlegen"), lambda d: variants.add(d, name))
+        except ValueError:
+            return False
+        return True
+
+    def switch_variant(self, name: str) -> None:
+        self.execute(self.tr("Variante „{0}“").format(name), lambda d: variants.switch(d, name))
+
+    def rename_variant(self, old: str, new: str) -> bool:
+        try:
+            self.execute(self.tr("Variante umbenennen"), lambda d: variants.rename(d, old, new))
+        except ValueError:
+            return False
+        return True
+
+    def remove_variant(self, name: str) -> None:
+        self.execute(self.tr("Variante löschen"), lambda d: variants.remove(d, name))
 
     def set_cut_settings(self, settings: CutSettings) -> None:
         def change(d: Document) -> None:

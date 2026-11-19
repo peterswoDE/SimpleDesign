@@ -89,6 +89,9 @@ class Document:
         self.joints: dict[str, Joint] = {}
         self.fittings: dict[str, Fitting] = {}
         self.cut_settings = CutSettings()
+        # Variants: name -> stored formula per parameter id (see variants.py).
+        self.variants: dict[str, dict[str, str]] = {}
+        self.active_variant: str | None = None
 
     # ================================================================== lookup
     def name_of(self, obj_id: str) -> str:

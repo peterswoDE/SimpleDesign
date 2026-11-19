@@ -479,6 +479,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.action_export)
         file_menu.addAction(self.action_drawing)
         file_menu.addAction(self.cutlist_panel.export_action)
+        file_menu.addAction(self.cutlist_panel.variants_action)
         file_menu.addAction(self.action_labels)
         file_menu.addAction(self.action_assembly)
         file_menu.addSeparator()

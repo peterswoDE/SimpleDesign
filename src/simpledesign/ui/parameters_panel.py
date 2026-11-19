@@ -1,11 +1,17 @@
-"""Parameter table: Name | Formel | Wert, grouped by scope (global, groups)."""
+"""Parameter table: Name | Formel | Wert, grouped by scope (global, groups).
+
+Above it the variant bar: switch between named parameter sets (Varianten).
+"""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
+    QInputDialog,
+    QLabel,
     QMessageBox,
     QPushButton,
     QTreeWidget,
@@ -47,8 +53,28 @@ class ParametersPanel(QWidget):
         buttons.addWidget(self.delete_button)
         buttons.addStretch(1)
 
+        self.variant_combo = QComboBox()
+        self.variant_combo.setToolTip(
+            self.tr("Benannte Parametersätze: umschalten ändert alle Parameter auf einmal")
+        )
+        self.variant_combo.activated.connect(self._on_variant_chosen)
+        self.variant_add = QPushButton(self.tr("Neu…"))
+        self.variant_add.setToolTip(self.tr("Neue Variante mit den aktuellen Werten anlegen"))
+        self.variant_add.clicked.connect(self.add_variant)
+        self.variant_rename = QPushButton(self.tr("Umbenennen…"))
+        self.variant_rename.clicked.connect(self.rename_variant)
+        self.variant_delete = QPushButton(self.tr("Löschen"))
+        self.variant_delete.setToolTip(self.tr("Aktive Variante löschen"))
+        self.variant_delete.clicked.connect(self.delete_variant)
+        variant_bar = QHBoxLayout()
+        variant_bar.addWidget(QLabel(self.tr("Variante:")))
+        variant_bar.addWidget(self.variant_combo, 1)
+        for button in (self.variant_add, self.variant_rename, self.variant_delete):
+            variant_bar.addWidget(button)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(variant_bar)
         layout.addWidget(self.tree)
         layout.addLayout(buttons)
 
@@ -61,9 +87,25 @@ class ParametersPanel(QWidget):
         chain = [g for g in doc.scope_chain(group_id) if g is not None]
         return " / ".join(doc.groups[g].name for g in reversed(chain))
 
+    def _rebuild_variants(self) -> None:
+        doc = self.controller.doc
+        combo = self.variant_combo
+        combo.blockSignals(True)
+        combo.clear()
+        if doc.variants:
+            combo.addItems(list(doc.variants))
+            combo.setCurrentText(doc.active_variant or "")
+        else:
+            combo.addItem(self.tr("(keine Varianten)"))
+        combo.setEnabled(bool(doc.variants))
+        combo.blockSignals(False)
+        self.variant_rename.setEnabled(bool(doc.variants))
+        self.variant_delete.setEnabled(bool(doc.variants))
+
     def rebuild(self) -> None:
         doc = self.controller.doc
         evaluation = self.controller.evaluation
+        self._rebuild_variants()
         self._updating = True
         self.tree.clear()
 
@@ -182,3 +224,44 @@ class ParametersPanel(QWidget):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self.controller.delete(ids)
+
+    # ------------------------------------------------------------------ variants
+    def _on_variant_chosen(self, index: int) -> None:
+        name = self.variant_combo.itemText(index)
+        if name in self.controller.doc.variants:
+            self.controller.switch_variant(name)
+
+    def _ask_name(self, title: str, text: str = "") -> str | None:
+        name, ok = QInputDialog.getText(self, title, self.tr("Name der Variante:"), text=text)
+        return name.strip() if ok and name.strip() else None
+
+    def add_variant(self) -> None:
+        doc = self.controller.doc
+        start = f"Variante_{len(doc.variants) + (1 if doc.variants else 2)}"
+        name = self._ask_name(self.tr("Neue Variante"), start)
+        if name is not None and not self.controller.add_variant(name):
+            QMessageBox.warning(
+                self, self.tr("Neue Variante"), self.tr("Dieser Name ist schon vergeben.")
+            )
+
+    def rename_variant(self) -> None:
+        old = self.controller.doc.active_variant
+        if old is None:
+            return
+        name = self._ask_name(self.tr("Variante umbenennen"), old)
+        if name is not None and not self.controller.rename_variant(old, name):
+            QMessageBox.warning(
+                self, self.tr("Variante umbenennen"), self.tr("Dieser Name ist schon vergeben.")
+            )
+
+    def delete_variant(self) -> None:
+        name = self.controller.doc.active_variant
+        if name is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            self.tr("Variante löschen"),
+            self.tr("Variante „{0}“ löschen?").format(name),
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.controller.remove_variant(name)

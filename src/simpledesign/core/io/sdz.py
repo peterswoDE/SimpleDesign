@@ -22,6 +22,7 @@ from simpledesign.core.materials.edgeband import (
 from simpledesign.core.materials.library import BUILTIN_MATERIALS
 from simpledesign.core.materials.material import material_from_dict, material_to_dict
 from simpledesign.core.model import fitting as fittings
+from simpledesign.core.model import variants
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.fitting import Fitting, FittingKind
 from simpledesign.core.model.joint import Joint, JointKind, default_params
@@ -41,7 +42,7 @@ from simpledesign.core.model.settings import CutSettings
 from simpledesign.core.sketch.model import from_dict as sketch_from_dict
 from simpledesign.core.sketch.model import to_dict as sketch_to_dict
 
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 FILE_SUFFIX = ".sdz"
 
 type Json = dict[str, Any]
@@ -79,11 +80,19 @@ def _migrate_4_to_5(data: Json) -> Json:
     return data
 
 
+def _migrate_5_to_6(data: Json) -> Json:
+    """Phase 9: variants and grain groups."""
+    data.setdefault("variants", [])
+    data.setdefault("active_variant", None)
+    return data
+
+
 MIGRATIONS: dict[int, Callable[[Json], Json]] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
     3: _migrate_3_to_4,
     4: _migrate_4_to_5,
+    5: _migrate_5_to_6,
 }
 
 
@@ -155,6 +164,10 @@ def to_dict(doc: Document) -> Json:
             }
             for f in doc.fittings.values()
         ],
+        "variants": [
+            {"name": name, "values": values} for name, values in variants.synced(doc).items()
+        ],
+        "active_variant": doc.active_variant,
         "cut_settings": {
             "kerf": doc.cut_settings.kerf,
             "crosscut_allowance": doc.cut_settings.crosscut_allowance,
@@ -237,6 +250,12 @@ def from_dict(data: Json) -> Document:
                 1 if int(f["side"]) >= 0 else -1,
                 values,
             )
+        for v in data["variants"]:
+            doc.variants[str(v["name"])] = {
+                str(k): str(e) for k, e in v["values"].items() if k in doc.parameters
+            }
+        active = data["active_variant"]
+        doc.active_variant = str(active) if active in doc.variants else None
     except (KeyError, TypeError, ValueError, AttributeError) as error:
         raise FileFormatError(f"invalid file content: {error!r}") from error
     _check_references(doc)

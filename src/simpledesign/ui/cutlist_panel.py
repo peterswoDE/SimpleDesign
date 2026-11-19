@@ -1,7 +1,8 @@
-"""Cut list table with CSV export."""
+"""Cut list table with CSV export (also one list and cut plan per variant)."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -27,6 +28,10 @@ from simpledesign.core.cutlist.cutlist import (
     edges_summary,
     to_csv,
 )
+from simpledesign.core.cutlist.optimize import optimize
+from simpledesign.core.model import variants
+from simpledesign.core.model.evaluate import Evaluator
+from simpledesign.ui.cutplan_panel import write_pdf
 from simpledesign.ui.texts import hardware_label, machining_text, number
 
 RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -78,6 +83,11 @@ class CutlistPanel(QWidget):
         self.summary = QLabel()
         self.export_action = QAction(self.tr("Zuschnittliste als CSV exportieren…"), self)
         self.export_action.triggered.connect(self.export_csv)
+        self.variants_action = QAction(self.tr("Zuschnittliste je Variante exportieren…"), self)
+        self.variants_action.setToolTip(
+            self.tr("Für jede Variante eine CSV-Zuschnittliste und einen Schnittplan (PDF)")
+        )
+        self.variants_action.triggered.connect(self.export_variants)
         self.export_button = QPushButton(self.tr("Als CSV exportieren…"))
         self.export_button.clicked.connect(self.export_csv)
         bottom = QHBoxLayout()
@@ -162,6 +172,56 @@ class CutlistPanel(QWidget):
         self.summary.setText(self.tr("{n} Teile").format(n=total))
         self.export_button.setEnabled(bool(self.rows))
         self.export_action.setEnabled(bool(self.rows))
+        self.variants_action.setEnabled(bool(self.controller.doc.variants))
+
+    def _csv(self, rows: list[CutRow]) -> str:
+        return to_csv(rows, self.headers(), self.machining, self.edges)
+
+    def export_variants(self) -> None:
+        file_path = self.controller.file_path
+        start = str(file_path.parent) if file_path else ""
+        folder = QFileDialog.getExistingDirectory(
+            self, self.tr("Zuschnittliste je Variante – Ordner wählen"), start
+        )
+        if not folder:
+            return
+        try:
+            written = self.export_variants_to(Path(folder))
+        except OSError as error:
+            QMessageBox.critical(self, self.tr("Export"), str(error))
+            return
+        QMessageBox.information(
+            self,
+            self.tr("Export"),
+            self.tr("{n} Dateien geschrieben:\n{files}").format(
+                n=len(written), files="\n".join(p.name for p in written)
+            ),
+        )
+
+    def export_variants_to(self, folder: Path) -> list[Path]:
+        """Per variant ``<Datei>_<Variante>.csv`` and ``…_Schnittplan.pdf``."""
+        doc = self.controller.doc
+        file_path = self.controller.file_path
+        stem = file_path.stem if file_path else self.tr("Unbenannt")
+        written: list[Path] = []
+        for name in variants.synced(doc):
+            work = variants.variant_document(doc, name)
+            evaluation = Evaluator().evaluate(work)
+            base = f"{stem}_{re.sub(r'[^\w.-]+', '_', name)}"
+            csv_path = folder / f"{base}.csv"
+            csv_path.write_text(
+                self._csv(build_cutlist(work, evaluation)), encoding="utf-8-sig", newline=""
+            )
+            written.append(csv_path)
+            plans = optimize(work, evaluation)
+            if plans:
+                pdf_path = folder / f"{base}_Schnittplan.pdf"
+                title = self.tr("Schnittplan – {name} – Variante {variant}").format(
+                    name=stem, variant=name
+                )
+                write_pdf(pdf_path, plans, title)
+                written.append(pdf_path)
+        return written
 
     def export_csv(self) -> None:
         start = self.controller.file_path.with_suffix(".csv") if self.controller.file_path else ""
@@ -173,7 +233,7 @@ class CutlistPanel(QWidget):
         try:
             # utf-8-sig: Excel only detects UTF-8 (umlauts) with a BOM.
             Path(path).write_text(
-                to_csv(self.rows, self.headers(), self.machining, self.edges),
+                self._csv(self.rows),
                 encoding="utf-8-sig",
                 newline="",
             )
