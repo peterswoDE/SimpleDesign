@@ -68,6 +68,10 @@ class PointerHandler(Protocol):
         """Escape: abort a running drag."""
         ...
 
+    def type_key(self, key: int, text: str) -> bool:
+        """A key pressed in the view (type a value while dragging). True if used."""
+        ...
+
 
 _RELEASE_BUTTON = {
     "LeftButtonReleaseEvent": "left",
@@ -320,6 +324,10 @@ class Viewport(QtInteractor):
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.interaction_style.cancel()
+            event.accept()
+            return
+        handler = self.interaction_style.pointer_handler
+        if handler is not None and handler.type_key(event.key(), event.text()):
             event.accept()
             return
         super().keyPressEvent(event)  # type: ignore[no-untyped-call]

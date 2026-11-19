@@ -13,6 +13,8 @@
   moves, the opposite face stays. The change is added to the size formula.
 * In rotate mode three rings replace the arrows; dragging a ring turns the
   board about its centre (15° steps, Shift: 1°).
+* While dragging an arrow, handle or ring a value can be typed: distance,
+  new size or angle; Enter applies it.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pyvista as pv
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from vtkmodules.vtkCommonCore import vtkCommand
 from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkRenderingCore import (
@@ -160,6 +162,7 @@ class Scene(QObject):
         self._press_point: Vec3 | None = None
         self._drag: _Drag | None = None
         self._hover_axis: Axis | None = None
+        self._typed = ""  # value typed during a drag
 
         self._create_overlay()
         viewport.interaction_style.pointer_handler = self
@@ -611,6 +614,7 @@ class Scene(QObject):
     # ================================================================== pointer events
     def press(self, x: int, y: int, ctrl: bool) -> bool:
         self._press = (x, y)
+        self._typed = ""
         self._press_board = self._press_point = None
         ring = self.ring_at(x, y)
         board_id = self.gizmo_board()
@@ -749,6 +753,8 @@ class Scene(QObject):
 
     def move(self, x: int, y: int) -> bool:
         drag = self._drag
+        if drag is not None and self._typed:
+            return True  # a typed value wins over the mouse
         if drag is None:
             press = self._press
             if self._press_board is None or press is None:
@@ -885,13 +891,8 @@ class Scene(QObject):
     def release(self, x: int, y: int, ctrl: bool) -> None:
         press, self._press = self._press, None
         board_id, self._press_board = self._press_board, None
-        drag, self._drag = self._drag, None
-        if drag is not None:
-            self._color_arrows(None)
-            self._color_handles(None)
-            self._color_rings(None)
-            self.status_message.emit("")
-            self._commit(drag)
+        if self._drag is not None:
+            self._finish()
             return
         if press is None or max(abs(x - press[0]), abs(y - press[1])) > CLICK_TOLERANCE_PX:
             return
@@ -905,6 +906,71 @@ class Scene(QObject):
             self.controller.set_selection(selection)
         else:
             self.controller.set_selection([board_id] if board_id else [])
+
+    def _finish(self) -> None:
+        """End the running drag and apply it."""
+        drag, self._drag = self._drag, None
+        self._press = None
+        self._press_board = self._press_point = None
+        self._typed = ""
+        if drag is None:
+            return
+        self._color_arrows(None)
+        self._color_handles(None)
+        self._color_rings(None)
+        self.status_message.emit("")
+        self._commit(drag)
+
+    def typeable(self) -> bool:
+        """A drag is running that takes a typed value (not a free plane move)."""
+        drag = self._drag
+        return drag is not None and drag.axis is not None
+
+    def type_key(self, key: int, text: str) -> bool:
+        if not self.typeable():
+            return False
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._finish()
+            return True
+        if key == Qt.Key.Key_Backspace:
+            self._typed = self._typed[:-1]
+        elif text and text in "0123456789.,-":
+            self._typed += "." if text == "," else text
+        else:
+            return False
+        self._apply_typed()
+        return True
+
+    def _apply_typed(self) -> None:
+        drag = self._drag
+        assert drag is not None and drag.axis is not None
+        try:
+            value = float(self._typed)
+        except ValueError:
+            value = None
+        if value is not None:
+            i = drag.axis.position
+            if drag.kind == "resize":
+                assert drag.single is not None
+                extent = self.controller.evaluation.boards[drag.single].extent(drag.axis)
+                drag.snapped = False
+                self._set_resize(drag, drag.side * (value - extent))
+            elif drag.kind == "rotate":
+                self._set_rotate(drag, value)
+            else:
+                drag.snaps = {}
+                drag.delta = [0.0, 0.0, 0.0]
+                drag.delta[i] = value
+                self._preview(drag)
+        what = {"resize": self.tr("neue Größe"), "rotate": self.tr("Winkel")}.get(
+            drag.kind, self.tr("Abstand")
+        )
+        unit = "°" if drag.kind == "rotate" else " mm"
+        self.status_message.emit(
+            self.tr("Eingabe {0}: {1}{2}   (Enter: übernehmen, Esc: abbrechen)").format(
+                what, self._typed or "…", unit
+            )
+        )
 
     def hover(self, x: int, y: int) -> None:
         if self._rotate_mode:
@@ -949,6 +1015,7 @@ class Scene(QObject):
         drag, self._drag = self._drag, None
         self._press = None
         self._press_board = self._press_point = None
+        self._typed = ""
         if drag is not None:
             self._color_arrows(None)
             self._color_handles(None)

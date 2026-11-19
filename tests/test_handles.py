@@ -121,3 +121,47 @@ def test_rotate_ring_turns_about_centre(window: MainWindow) -> None:
     # an already rotated board offers only its own axis
     assert window.scene.ring_axes() == [Axis.Z]
     assert before.angle == 0
+
+
+def _type(window: MainWindow, text: str) -> None:
+    from PySide6.QtCore import Qt
+
+    for char in text:
+        assert window.scene.type_key(0, char) is (char != "x")
+    assert window.scene.type_key(Qt.Key.Key_Return, "\r") is True
+
+
+def test_type_size_while_resizing(window: MainWindow) -> None:
+    board_id = _board(window)
+    scene = window.scene
+    sx, sy = _screen(window, (600, 150, 9))
+    assert scene.press(sx, sy, False) is True
+    scene.move(sx + 20, sy)
+    _type(window, "45x0,5")  # unknown "x" is ignored by the view (returns False)
+    state = window.controller.evaluation.boards[board_id]
+    assert state.length == pytest.approx(450.5)
+    scene.release(sx + 20, sy, False)  # the button comes up later: nothing more happens
+    assert window.controller.evaluation.boards[board_id].length == pytest.approx(450.5)
+
+
+def test_type_angle_while_rotating(window: MainWindow) -> None:
+    board_id = _board(window)
+    scene = window.scene
+    window.action_rotate_mode.trigger()
+    sx, sy = _screen(window, scene.ring_point(Axis.Z, 10))
+    assert scene.press(sx, sy, False) is True
+    _type(window, "-30")
+    assert window.controller.evaluation.boards[board_id].angle % 360 == pytest.approx(330)
+
+
+def test_type_distance_along_arrow(window: MainWindow) -> None:
+    board_id = _board(window)
+    scene = window.scene
+    origin = scene.gizmo_origin()
+    assert origin is not None
+    tip = (origin[0], origin[1] + scene._gizmo_scale(origin) * 0.6, origin[2])
+    sx, sy = _screen(window, tip)
+    assert scene.arrow_at(sx, sy) == Axis.Y
+    assert scene.press(sx, sy, False) is True
+    _type(window, "250")
+    assert window.controller.evaluation.boards[board_id].y == pytest.approx(250)
