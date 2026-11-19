@@ -9,12 +9,15 @@ from pathlib import Path
 from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QSlider,
     QStyle,
     QToolBar,
     QToolButton,
@@ -31,6 +34,7 @@ from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import format_number
 from simpledesign.core.templates.template import Template
 from simpledesign.ui.array_dialog import ArrayDialog
+from simpledesign.ui.assembly_pdf import write_assembly_pdf
 from simpledesign.ui.cutlist_panel import CutlistPanel
 from simpledesign.ui.cutplan_panel import CutplanPanel
 from simpledesign.ui.drawing_dialog import DrawingDialog
@@ -177,6 +181,11 @@ class MainWindow(QMainWindow):
         self.action_labels = QAction(self.tr("&Etiketten…"), self)
         self.action_labels.setToolTip(self.tr("Je Teil ein Etikett mit Maßen und QR-Code (PDF)"))
         self.action_labels.triggered.connect(self.show_labels)
+        self.action_assembly = QAction(self.tr("&Montageanleitung…"), self)
+        self.action_assembly.setToolTip(
+            self.tr("Montageschritte nach den Verbindungen mit Bildern als PDF")
+        )
+        self.action_assembly.triggered.connect(self.export_assembly)
         self.action_materials = QAction(self.tr("&Materialbibliothek…"), self)
         self.action_materials.triggered.connect(self.edit_materials)
 
@@ -366,6 +375,26 @@ class MainWindow(QMainWindow):
         self.action_xray.setToolTip(self.tr("Alle nicht ausgewählten Teile durchsichtig"))
         self.action_xray.toggled.connect(lambda on: setattr(self.scene, "xray", on))
         self.scene.view_mode_changed.connect(self._sync_view_modes)
+        self.action_explode = QAction(self.tr("E&xplosionsansicht"), self)
+        self.action_explode.setCheckable(True)
+        self.action_explode.setShortcut(QKeySequence("X"))
+        self.action_explode.setToolTip(
+            self.tr("Teile auseinandergezogen zeigen (Abstand mit dem Regler unten)")
+        )
+        self.action_explode.toggled.connect(self._explode)
+        self.explode_slider = QSlider(Qt.Orientation.Horizontal)
+        self.explode_slider.setRange(5, 150)
+        self.explode_slider.setValue(60)
+        self.explode_slider.setFixedWidth(140)
+        self.explode_slider.setToolTip(self.tr("Abstand der Teile in der Explosionsansicht"))
+        self.explode_slider.valueChanged.connect(self._explode_amount)
+        self.explode_box = QWidget()
+        explode_layout = QHBoxLayout(self.explode_box)
+        explode_layout.setContentsMargins(0, 0, 0, 0)
+        explode_layout.addWidget(QLabel(self.tr("Explosion:")))
+        explode_layout.addWidget(self.explode_slider)
+        self.statusBar().addPermanentWidget(self.explode_box)
+        self.explode_box.hide()
         self.action_collisions = QAction(self.tr("&Kollisionen"), self)
         self.action_collisions.setCheckable(True)
         self.action_collisions.setShortcut(QKeySequence("K"))
@@ -404,6 +433,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.action_drawing)
         file_menu.addAction(self.cutlist_panel.export_action)
         file_menu.addAction(self.action_labels)
+        file_menu.addAction(self.action_assembly)
         file_menu.addSeparator()
         file_menu.addAction(self.action_quit)
 
@@ -460,7 +490,9 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_rotate_mode)
         view_menu.addActions([self.action_measure, self.action_measure_points])
         view_menu.addSeparator()
-        view_menu.addActions([self.action_isolate, self.action_xray, self.action_collisions])
+        view_menu.addActions(
+            [self.action_isolate, self.action_xray, self.action_explode, self.action_collisions]
+        )
         view_menu.addSeparator()
         for dock in (
             self.library_dock,
@@ -520,7 +552,12 @@ class MainWindow(QMainWindow):
             (
                 "view",
                 self.tr("Ansicht"),
-                [self.action_isolate, self.action_xray, *self.view_actions.values()],
+                [
+                    self.action_isolate,
+                    self.action_xray,
+                    self.action_explode,
+                    *self.view_actions.values(),
+                ],
             ),
         ]
         # shorter button labels: the group title says the rest
@@ -533,6 +570,7 @@ class MainWindow(QMainWindow):
             (self.action_split, self.tr("Auftrennen")),
             (self.action_isolate, self.tr("Isolieren")),
             (self.action_xray, self.tr("Röntgen")),
+            (self.action_explode, self.tr("Explosion")),
             (self.view_actions["iso"], self.tr("Iso")),
         ):
             action.setIconText(short)
@@ -704,6 +742,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(self.tr("Zum Isolieren erst Teile auswählen"), 5000)
         self.scene.isolate(boards)
 
+    def _explode(self, on: bool) -> None:
+        self.explode_box.setVisible(on)
+        self.scene.explode = self.explode_slider.value() / 100 if on else 0.0
+
+    def _explode_amount(self, value: int) -> None:
+        if self.action_explode.isChecked():
+            self.scene.explode = value / 100
+
     def _report_collisions(self) -> None:
         if not self.scene.show_collisions:
             return
@@ -722,11 +768,13 @@ class MainWindow(QMainWindow):
         for action, on in (
             (self.action_isolate, self.scene.isolated),
             (self.action_xray, self.scene.xray),
+            (self.action_explode, self.scene.exploded),
             (self.action_collisions, self.scene.show_collisions),
         ):
             action.blockSignals(True)
             action.setChecked(on)
             action.blockSignals(False)
+        self.explode_box.setVisible(self.scene.exploded)
 
     def array_copy(self) -> ArrayDialog | None:
         """Ask for count and spacing, then copy the selection in a row."""
@@ -954,6 +1002,46 @@ class MainWindow(QMainWindow):
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.open()
         return dialog
+
+    def _title(self) -> str:
+        path = self.controller.file_path
+        return path.stem if path else self.tr("Unbenannt")
+
+    def export_assembly(self) -> None:
+        start = self.controller.file_path or Path.home() / self.tr("Unbenannt")
+        path, _filter = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Montageanleitung speichern"),
+            str(start.with_name(start.stem + " " + self.tr("Montage") + ".pdf")),
+            self.tr("PDF (*.pdf)"),
+        )
+        if path:
+            target = Path(path)
+            if target.suffix.lower() != ".pdf":
+                target = target.with_name(target.name + ".pdf")
+            self.export_assembly_to(target)
+
+    def export_assembly_to(self, path: Path) -> bool:
+        if not any(self.controller.doc.is_visible(b) for b in self.controller.doc.boards.values()):
+            self.statusBar().showMessage(self.tr("Keine sichtbaren Teile"), 5000)
+            return False
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            pages = write_assembly_pdf(
+                path, self.controller.doc, self.controller.evaluation, self._title()
+            )
+        except OSError as error:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, self.tr("Montageanleitung"), str(error))
+            return False
+        QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage(
+            self.tr("Montageanleitung gespeichert: {path} ({pages} Seiten)").format(
+                path=path, pages=pages
+            ),
+            6000,
+        )
+        return True
 
     def export_to(self, path: Path) -> bool:
         try:

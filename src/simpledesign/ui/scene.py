@@ -37,6 +37,7 @@ from vtkmodules.vtkRenderingCore import (
 from simpledesign.app.controller import Controller
 from simpledesign.app.snapping import SnapTarget, Vec3, axis_parameter, best_snap, snap_targets
 from simpledesign.core.geometry.collision import Collision, find_collisions
+from simpledesign.core.geometry.explode import explode_offsets
 from simpledesign.core.geometry.mesh import part_mesh
 from simpledesign.core.geometry.placement import world_bounds
 from simpledesign.core.model import fit, transform
@@ -174,6 +175,7 @@ class Scene(QObject):
         self._isolated: set[str] | None = None
         self._known: set[str] = set()
         self._xray = False
+        self._explode = 0.0  # exploded view: 0 = assembled
         self._show_collisions = False
         self.collisions: list[Collision] = []
         self._collision_key: tuple[int, frozenset[str]] | None = None
@@ -248,6 +250,26 @@ class Scene(QObject):
             self.view_mode_changed.emit()
 
     @property
+    def explode(self) -> float:
+        return self._explode
+
+    @explode.setter
+    def explode(self, factor: float) -> None:
+        """Pull the parts apart for display (0 = assembled, 1 = twice as far
+        from the centre). While exploded, parts can be selected but not moved."""
+        factor = max(0.0, min(2.0, factor))
+        if factor != self._explode:
+            was = self.exploded
+            self._explode = factor
+            self.rebuild()
+            if was != self.exploded:
+                self.view_mode_changed.emit()
+
+    @property
+    def exploded(self) -> bool:
+        return self._explode > 0
+
+    @property
     def show_collisions(self) -> bool:
         return self._show_collisions
 
@@ -303,15 +325,33 @@ class Scene(QObject):
         if self._isolated is not None and not self._isolated & doc.boards.keys():
             self._isolated = None  # isolated parts gone (new file, deleted)
             self.view_mode_changed.emit()
+        offsets = (
+            explode_offsets(
+                doc,
+                evaluation,
+                self._explode,
+                {
+                    b.id
+                    for b in doc.boards.values()
+                    if doc.is_visible(b) and not self._hidden_by_isolation(b.id)
+                },
+            )
+            if self._explode > 0
+            else {}
+        )
         for board in doc.boards.values():
             if not doc.is_visible(board) or self._hidden_by_isolation(board.id):
                 continue
             is_selected = board.id in selected
             color = SELECTION_COLOR if is_selected else doc.materials[board.material_id].color
             pairs = []
-            for shape in evaluation.machining.parts[board.id]:
+            moved = offsets.get(board.id)
+            for copy, shape in enumerate(evaluation.machining.parts[board.id]):
                 face_mapper, edge_mapper = self._mappers(shape)
                 origin = shape.origin
+                if moved:
+                    d = moved[copy]
+                    origin = (origin[0] + d[0], origin[1] + d[1], origin[2] + d[2])
                 face, edge = self._pooled(used)
                 used += 1
                 face.SetMapper(face_mapper)
@@ -344,7 +384,7 @@ class Scene(QObject):
                 self.renderer.RemoveActor(face)
                 self.renderer.RemoveActor(edge)
             del self._pool[used:]
-        self._update_collisions(set(self._board_actors))
+        self._update_collisions(set() if self.exploded else set(self._board_actors))
         self._place_gizmo()
         self.viewport.render()
 
@@ -533,7 +573,7 @@ class Scene(QObject):
         return self._current_gizmo_origin()
 
     def _place_gizmo(self) -> None:
-        box = self.bounds(self._selected_boards)
+        box = None if self.exploded else self.bounds(self._selected_boards)
         if box is None:
             self._gizmo_origin = None
         else:
@@ -546,7 +586,7 @@ class Scene(QObject):
     def _place_handles(self) -> None:
         """Resize handles on the face centres of a single, not rotated board."""
         self._handle_points = {}
-        board_id = None if self._rotate_mode else self.gizmo_board()
+        board_id = None if self._rotate_mode or self.exploded else self.gizmo_board()
         doc, evaluation = self.controller.doc, self.controller.evaluation
         state = evaluation.boards.get(board_id) if board_id is not None else None
         if board_id is not None and state is not None and not state.rotated:
@@ -874,8 +914,8 @@ class Scene(QObject):
 
     def _start_part_drag(self, ctrl: bool) -> _Drag | None:
         board_id, point = self._press_board, self._press_point
-        if board_id is None or point is None:
-            return None
+        if board_id is None or point is None or self.exploded:
+            return None  # exploded parts are only shown apart: no moving
         if board_id not in self._selected_boards:
             selection = list(self.controller.selection) if ctrl else []
             self.controller.set_selection([*selection, board_id])
