@@ -18,9 +18,10 @@ from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
 from simpledesign.app.snapping import Vec3
 from simpledesign.core.materials.library import builtin_material
-from simpledesign.core.model import fit, front
+from simpledesign.core.model import fit, front, transform
 from simpledesign.core.model.fitting import Fitting, FittingKind
 from simpledesign.core.model.machining import fitting_holes
+from simpledesign.core.model.part import Axis
 from simpledesign.ui.texts import number
 
 if TYPE_CHECKING:
@@ -880,3 +881,64 @@ class SetDistanceTool(FaceMeasureTool):
             self.reset()
         else:
             super().cancel()
+
+
+_AXES = (Axis.X, Axis.Y, Axis.Z)
+
+
+class ExtendTool(FaceMeasureTool):
+    """Bis Fläche ziehen: click the face of a part that should move, then a
+    parallel face of another part - the face goes there and stays linked."""
+
+    def start_hint(self) -> str:
+        return _tr("Bis Fläche ziehen: Fläche des Teils klicken, die sich bewegt   (Esc: beenden)")
+
+    def second_hint(self) -> str:
+        return _tr("Zielfläche eines anderen Teils klicken   (Esc: neu beginnen)")
+
+    def press(self, x: int, y: int, ctrl: bool) -> bool:
+        if self.first is None:
+            face = pick_face(self.scene, x, y)
+            if face is None:
+                return False
+            controller = self.scene.controller
+            if face.rect is None or not transform.resizable(
+                controller.doc, controller.evaluation, face.board_id, _AXES[face.axis]
+            ):
+                self.scene.status_message.emit(
+                    _tr("Diese Fläche kann nicht gezogen werden (gedrehtes oder Skizzenteil)")
+                )
+                return True
+        return super().press(x, y, ctrl)
+
+    def report(self, distance: float, final: bool) -> None:
+        if not final:
+            self.scene.status_message.emit(_tr("Weg {0} mm").format(number(distance)))
+
+    def complete(self, first: PickedFace, second: PickedFace) -> None:
+        if second.board_id == first.board_id:
+            self.scene.status_message.emit(_tr("Bitte eine Fläche eines anderen Teils wählen"))
+            return
+        controller = self.scene.controller
+        doc = controller.doc
+        name, target = doc.boards[first.board_id].name, doc.boards[second.board_id].name
+        formula = controller.extend_board(
+            first.board_id, _AXES[first.axis], first.sign, second.board_id, second.value
+        )
+        self.first = None
+        self.first_face.VisibilityOff()
+        self.line.VisibilityOff()
+        if formula is None:
+            self.scene.status_message.emit(
+                _tr("„{0}“ kann nicht bis dorthin gezogen werden (Größe wäre 0)").format(name)
+            )
+        elif formula:
+            self.scene.status_message.emit(
+                _tr("„{0}“ bis „{1}“ gezogen und verknüpft ({2})").format(name, target, formula)
+            )
+        else:
+            self.scene.status_message.emit(
+                _tr("„{0}“ bis „{1}“ gezogen (ohne Verknüpfung: „{1}“ hängt von „{0}“ ab)").format(
+                    name, target
+                )
+            )

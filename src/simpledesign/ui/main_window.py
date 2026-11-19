@@ -60,6 +60,7 @@ from simpledesign.ui.shortcut_labels import show_shortcut
 from simpledesign.ui.sketch_editor import NewPartEditor, new_sketch_part
 from simpledesign.ui.templates_dialog import InsertTemplateDialog
 from simpledesign.ui.tools import (
+    ExtendTool,
     FaceMeasureTool,
     FrontTool,
     InsertTool,
@@ -345,6 +346,15 @@ class MainWindow(QMainWindow):
             ),
             lambda: SetDistanceTool(self.scene),
         )
+        self.action_extend = self._tool_action(
+            self.tr("Bis &Fläche ziehen"),
+            "Z",
+            self.tr(
+                "Fläche eines Teils klicken, dann eine parallele Fläche eines anderen Teils: "
+                "das Teil wird bis dorthin gezogen und bleibt per Formel verknüpft"
+            ),
+            lambda: ExtendTool(self.scene),
+        )
         self.scene.tool_changed.connect(self._sync_tool_actions)
         self.action_seat_groove = QAction(self.tr("In &Nut setzen…"), self)
         self.action_seat_groove.setToolTip(
@@ -484,6 +494,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.action_array)
         edit_menu.addAction(self.action_split)
         edit_menu.addAction(self.action_set_distance)
+        edit_menu.addAction(self.action_extend)
 
         insert_menu = menu_bar.addMenu(self.tr("&Einfügen"))
         insert_menu.addActions(
@@ -577,7 +588,12 @@ class MainWindow(QMainWindow):
             (
                 "tools",
                 self.tr("Werkzeuge"),
-                [self.action_rotate_mode, self.action_measure, self.action_set_distance],
+                [
+                    self.action_rotate_mode,
+                    self.action_measure,
+                    self.action_set_distance,
+                    self.action_extend,
+                ],
             ),
             None,  # second row
             (

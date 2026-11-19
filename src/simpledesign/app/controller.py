@@ -635,6 +635,35 @@ class Controller(QObject):
             return False
         return True
 
+    def extend_board(
+        self, board_id: str, axis: Axis, side: int, target_id: str, value: float
+    ) -> str | None:
+        """Pull a face of ``board_id`` to the face of ``target_id`` at ``value``
+        and link it there (Bis Fläche ziehen). Returns the formula used ("" if
+        it had to be a plain number because of a cycle), None if not possible."""
+        evaluation = self.evaluation
+        target = transform.face_formula(self.doc, evaluation, target_id, axis, value)
+        if target is None:
+            target = format_number(value)
+        used = [target]
+
+        def change(d: Document) -> None:
+            transform.extend_to(d, evaluation, board_id, axis, side, target, value)
+            after = Evaluator().evaluate(d)
+            dim = evaluation.boards[board_id].orientation.dimension_along(axis)
+            if any(
+                (e := after.error(board_id, prop)) is not None and e.code == ErrorCode.CYCLE
+                for prop in (dim, axis.value)
+            ):
+                transform.extend_to_number(d, evaluation, board_id, axis, side, value)
+                used[0] = ""
+
+        try:
+            self.execute(self.tr("Bis Fläche ziehen"), change)
+        except ValueError:
+            return None
+        return used[0]
+
     def rotate_board(self, board_id: str, axis: Axis, degrees: float) -> bool:
         """Turn a board about its centre (rotate ring); False if not possible."""
         evaluation = self.evaluation
