@@ -65,6 +65,10 @@ def ref_key(ref: Ref) -> str:
     return ".".join((ref.path[0].removeprefix("@"), *ref.path[1:]))
 
 
+# Board properties that change when the board is moved.
+_MOVING_PROPERTIES = frozenset((*POSITION, "x2", "y2", "z2"))
+
+
 def ref_target_id(ref: Ref) -> str | None:
     first = ref.path[0]
     return first[1:] if first.startswith("@") else None
@@ -621,7 +625,11 @@ class Document:
             if target is None or target in seen:
                 continue
             if target in boards and target in self.boards:
-                return True
+                # only positions follow a move - a size (e.g. the own
+                # thickness in a centring formula) does not
+                if ref.path[-1] in _MOVING_PROPERTIES:
+                    return True
+                continue
             if target in self.parameters:
                 seen.add(target)
                 if self._uses_boards(self.parameters[target].expression, boards, seen):

@@ -201,3 +201,28 @@ def test_distance_shift_keeps_the_side() -> None:
     # touching faces move apart where the target face looks away from
     assert distance_shift(_face(18, 1), _face(18, -1), 30) == pytest.approx(30)
     assert distance_shift(_face(18, -1), _face(18, 1), 30) == pytest.approx(-30)
+
+
+def test_set_distance_moves_centred_divider_sideways(window: MainWindow) -> None:
+    # a centred divider's x formula uses its own thickness - it must move anyway
+    c = window.controller
+    window.action_insert_divider.trigger()
+    tool = window.scene.tool
+    assert isinstance(tool, InsertTool)
+    x, y = _screen(window, (402, 400, 900))
+    tool.hover(x, y)
+    tool.press(x, y, False)
+    window.scene.end_tool()
+    divider = next(b.id for b in c.doc.boards.values() if b.name.startswith("Trennwand"))
+    window.viewport.show_view("iso")
+    window.viewport.render()
+    window.action_set_distance.trigger()
+    setter = window.scene.tool
+    assert isinstance(setter, SetDistanceTool)
+    assert setter.press(*_screen(window, (18, 200, 900)), False)  # left side, inside
+    assert setter.press(*_screen(window, (409, 200, 900)), False)  # divider, right face
+    assert setter.target is not None
+    for char in "300":
+        setter.type_key(0, char)
+    assert setter.apply()
+    assert c.evaluation.boards[divider].x == pytest.approx(300)  # right face at 318
