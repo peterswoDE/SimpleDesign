@@ -29,6 +29,7 @@ from simpledesign.core.cutlist.cutlist import (
     to_csv,
 )
 from simpledesign.core.cutlist.optimize import optimize
+from simpledesign.core.io.cnc import write_cnc
 from simpledesign.core.model import variants
 from simpledesign.core.model.evaluate import Evaluator
 from simpledesign.ui.cutplan_panel import write_pdf
@@ -88,6 +89,14 @@ class CutlistPanel(QWidget):
             self.tr("Für jede Variante eine CSV-Zuschnittliste und einen Schnittplan (PDF)")
         )
         self.variants_action.triggered.connect(self.export_variants)
+        self.cnc_action = QAction(self.tr("CNC-Export (DXF je Teil)…"), self)
+        self.cnc_action.setToolTip(
+            self.tr(
+                "Je Teil eine DXF für Nesting-Fräsen: Kontur, Bohrungen je Ø/Tiefe, "
+                "Taschen/Nuten je Tiefe auf eigenen Layern"
+            )
+        )
+        self.cnc_action.triggered.connect(self.export_cnc)
         self.export_button = QPushButton(self.tr("Als CSV exportieren…"))
         self.export_button.clicked.connect(self.export_csv)
         bottom = QHBoxLayout()
@@ -173,9 +182,31 @@ class CutlistPanel(QWidget):
         self.export_button.setEnabled(bool(self.rows))
         self.export_action.setEnabled(bool(self.rows))
         self.variants_action.setEnabled(bool(self.controller.doc.variants))
+        self.cnc_action.setEnabled(bool(self.controller.doc.boards))
 
     def _csv(self, rows: list[CutRow]) -> str:
         return to_csv(rows, self.headers(), self.machining, self.edges)
+
+    def export_cnc(self) -> None:
+        file_path = self.controller.file_path
+        start = str(file_path.parent) if file_path else ""
+        folder = QFileDialog.getExistingDirectory(
+            self, self.tr("CNC-Export – Ordner wählen"), start
+        )
+        if not folder:
+            return
+        try:
+            written = write_cnc(self.controller.doc, self.controller.evaluation, Path(folder))
+        except OSError as error:
+            QMessageBox.critical(self, self.tr("CNC-Export"), str(error))
+            return
+        QMessageBox.information(
+            self,
+            self.tr("CNC-Export"),
+            self.tr("{n} DXF-Dateien geschrieben nach\n{folder}").format(
+                n=len(written), folder=folder
+            ),
+        )
 
     def export_variants(self) -> None:
         file_path = self.controller.file_path
