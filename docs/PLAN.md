@@ -280,6 +280,24 @@ Nur Politur, keine neuen Großfunktionen.
 
 > **Phase 8, Erweiterungen (umgesetzt):** Ziehgriffe zum Ändern der Größe, Drehringe zum freien Drehen, genaue Werte während des Ziehens eintippen. Einfüge-Werkzeuge: Trennwand (D), Fachboden (F) und Rückwand passen sich ins Fach ein und werden per Formel verknüpft; „In Nut setzen“ mit Nuttiefe, Spiel und Abstand (Standard in den Einstellungen); **Messen (M)** misst den Abstand zweier paralleler Flächen (Fläche wird hervorgehoben); Punkte messen (Umschalt+M) mit Fang an Ecken. **Abstand setzen (E):** Bezugsfläche klicken, dann die parallele Fläche des zu verschiebenden Teils, neuen Abstand tippen, Enter – das Teil wird einmalig verschoben (keine Verknüpfung). Reihe kopieren, Auswahl isolieren (I), Röntgenansicht (Alt+X). **Rückwände** (Teil-Eigenschaften): „Ist Rückwand“ und „Abstand zur Hinterkante“ je Rückwand; Teile, die in die Rückwand hineinragen oder an ihr enden, werden beim Festlegen/Ändern der Rückwand automatisch bis zu ihrer Vorderseite gekürzt und per Formel verknüpft (folgen also späteren Änderungen). „Geht durch die Rückwand“ führt ein Teil bis zur Hinterkante und teilt die Rückwand in zwei Teile, beide in Nuten; Abwählen fügt sie wieder zusammen. **Auftrennen (A):** Teile, durch die die Auswahl ganz hindurchgeht (z. B. Fachböden an einer durchgehenden Trennwand), werden an ihr in Stücke geteilt; die Stückenden sind Formeln auf die Trennflächen, die Stücke werden mit dem trennenden Teil verbunden (Fachboden wählen, um stattdessen die Trennwand zu teilen). Werkzeugleiste in kleinen beschrifteten Gruppen (Datei, Bearbeiten, Einfügen, Einpassen, Werkzeuge, Ansicht); jede Schaltfläche zeigt ihr Tastenkürzel in Klammern und folgt Änderungen im Tastenkürzel-Dialog.
 
+### Phase 9 – Werkzeuge für die Fertigung
+Ergebnis eines Vergleichs mit Fusion, SketchUp/OpenCutList, Polyboard, Cabinet Vision und Mozaik. Reihenfolge = Umsetzungsreihenfolge, jedes Werkzeug ein eigener Commit.
+
+**Hoher Nutzen**
+1. **Kollisionsprüfung** – Teile, die sich überschneiden, werden rot hervorgehoben und aufgelistet (Menü + dauerhafte Anzeige abschaltbar). Gewollte Überlappungen durch Verbindungen (Nut, Falz, Zapfen …) zählen nicht: geprüft wird die bearbeitete Geometrie.
+2. **Kantenumleimer** – je Brettkante (vorne/hinten/links/rechts) Umleimer mit Material und Dicke; Zuschnittliste: Rohmaß = Fertigmaß minus Umleimer, Laufmeter je Umleimer-Material, Kantensymbole in Zeichnung und Etikett.
+3. **Türen- und Schubladen-Generator** – Einpassen-Werkzeuge wie Trennwand/Fachboden: Fach anklicken → Tür (aufliegend/einliegend, Fuge, ein-/zweiflügelig) bzw. Schublade (Front, Zarge, Boden, Auszugsluft), per Formel an das Fach gebunden.
+4. **Beschläge mit Bohrbild** – Topfband 35 mm mit Montageplatte, Lochreihe System 32 für Bodenträger, Schubladenauszüge; Bohrungen erscheinen in 3D, Zeichnung, Bohrtabelle und Beschläge-Liste.
+5. **Etiketten** – je Teil ein Aufkleber (Name, Fertig-/Rohmaß, Material, Faserrichtung, Umleimerkanten, Möbel, QR-Code) als PDF für gängige Etikettenbögen.
+
+**Mittlerer Nutzen**
+6. **Explosionsansicht & Montageanleitung** – Teile auseinandergezogen anzeigen (Regler), Montageschritte nach Verbindungen als PDF.
+7. **Schnittansicht** – Schnittebene (X/Y/Z, verschiebbar) schneidet die Ansicht auf; Schnittflächen schraffiert.
+8. **Bis Fläche ziehen** – Fläche eines Teils anklicken, dann Zielfläche: das Maß wird als Formel an die Zielfläche gebunden (Push/Pull mit Verknüpfung).
+9. **Varianten** – mehrere benannte Parametersätze je Dokument, umschaltbar; Zuschnittliste/Export je Variante.
+10. **Maserung über Fronten** – Teile zu einer Maserungsgruppe zusammenfassen; der Schnittplan legt sie zusammenhängend aus einem Stück.
+11. **CNC-Export** – je Teil eine DXF mit Layern je Bearbeitung (Kontur, Bohrung je Ø/Tiefe, Tasche/Nut je Tiefe) für Nesting-Fräsen.
+
 ---
 
 ## 7. Qualität & Arbeitsweise
@@ -311,6 +329,6 @@ Nur Politur, keine neuen Großfunktionen.
 
 - ~~Genaue Regeln für Dübel-/Schraubenabstände~~ – geklärt: Randabstand 50, max. Abstand 150/200 mm, pro Verbindung einstellbar.
 - Welche Schnittmaschine (Formatkreissäge, Tauchsäge, Baumarkt-Zuschnitt) → Optimierungsregeln – vor Phase 2.
-- Kantenumleimer/Furnierkanten in der Zuschnittliste (Maßabzug?) – vor Phase 2.
+- ~~Kantenumleimer/Furnierkanten in der Zuschnittliste~~ – Phase 9 (Maßabzug: ja, Rohmaß = Fertigmaß minus Umleimer).
 - Rundungen/Fasen an Kanten – frühestens Phase 5.
 - ~~Soll das Tool je weitergegeben werden (Lizenzfrage)?~~ – geklärt: evtl. Verkauf → keine GPL-Abhängigkeiten.
