@@ -16,13 +16,13 @@ from collections.abc import Iterable
 
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
-from simpledesign.core.model.fit import AXES, Face, GrooveSettings, _Box, boxes, seat_in_groove
+from simpledesign.core.model.fit import AXES, Box, Face, GrooveSettings, boxes, seat_in_groove
 from simpledesign.core.model.joint import JointKind
 
 EPS = 0.5  # mm: tolerance for "touching" and "covers"
 
 
-def _box(doc: Document, evaluation: Evaluation, board_id: str) -> _Box | None:
+def _box(doc: Document, evaluation: Evaluation, board_id: str) -> Box | None:
     found = [b for b in boxes(doc, evaluation) if b.board_id == board_id]
     return found[0] if len(found) == 1 else None
 
@@ -68,7 +68,7 @@ def set_back_distance(
     doc.set_expression(panel_id, "xyz"[t], f"{rear.formula} - {distance:g} - {name}.thickness")
 
 
-def _overlap(a: _Box, b: _Box, axis: int) -> float:
+def _overlap(a: Box, b: Box, axis: int) -> float:
     return min(a.hi[axis], b.hi[axis]) - max(a.lo[axis], b.lo[axis])
 
 

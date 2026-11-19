@@ -13,7 +13,7 @@ from collections.abc import Iterable
 
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation
-from simpledesign.core.model.fit import AXES, _Box, boxes
+from simpledesign.core.model.fit import AXES, Box, boxes
 from simpledesign.core.model.joint import Joint, JointKind
 from simpledesign.core.params.expression import format_number
 
@@ -22,7 +22,7 @@ EPS = 0.5  # mm
 Cut = tuple[float, float, str, str]  # lo, hi, lo formula, hi formula along the split axis
 
 
-def _crosses(cutter: _Box, box: _Box, s: int) -> bool:
+def _crosses(cutter: Box, box: Box, s: int) -> bool:
     """``cutter`` (thickness along ``s``) passes completely through ``box``."""
     if not (cutter.lo[s] > box.lo[s] + EPS and cutter.hi[s] < box.hi[s] - EPS):
         return False
@@ -33,7 +33,7 @@ def _crosses(cutter: _Box, box: _Box, s: int) -> bool:
     )
 
 
-def _cuts_for(doc: Document, cutters: list[_Box], box: _Box) -> tuple[int, list[Cut]] | None:
+def _cuts_for(doc: Document, cutters: list[Box], box: Box) -> tuple[int, list[Cut]] | None:
     """Split axis and sorted cuts of one board copy (None: not crossed)."""
     by_axis: dict[int, list[Cut]] = {}
     for c in cutters:
@@ -87,7 +87,7 @@ def _split(
     board_id: str,
     s: int,
     cuts: list[Cut],
-    box: _Box,
+    box: Box,
     cutter_set: set[str],
 ) -> list[str]:
     board = doc.boards[board_id]

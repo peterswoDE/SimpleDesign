@@ -25,7 +25,7 @@ from simpledesign import __version__
 from simpledesign.app.controller import Controller
 from simpledesign.core.io import sdz
 from simpledesign.core.io.export import ExportError, export
-from simpledesign.core.model import arrange, fit
+from simpledesign.core.model import arrange, fit, front
 from simpledesign.core.model.arrange import AlignMode
 from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import format_number
@@ -52,6 +52,7 @@ from simpledesign.ui.sketch_editor import NewPartEditor, new_sketch_part
 from simpledesign.ui.templates_dialog import InsertTemplateDialog
 from simpledesign.ui.tools import (
     FaceMeasureTool,
+    FrontTool,
     InsertTool,
     MeasureTool,
     SetDistanceTool,
@@ -281,6 +282,24 @@ class MainWindow(QMainWindow):
             self.tr("Rückwand in Nut: hinten in den Korpus klicken"),
             lambda: InsertTool(self.scene, fit.InsertKind.BACK),
         )
+        self.action_insert_door = self._tool_action(
+            self.tr("T&ür einpassen"),
+            "Shift+T",
+            self.tr(
+                "Tür vor ein Fach klicken: aufliegend oder einliegend, ein- oder "
+                "zweiflügelig, an das Fach gebunden"
+            ),
+            lambda: FrontTool(self.scene, front.FrontKind.DOOR),
+        )
+        self.action_insert_drawer = self._tool_action(
+            self.tr("&Schublade einpassen"),
+            "S",
+            self.tr(
+                "Schublade (Front, Zargen, Boden, Platz für Auszüge) in ein Fach "
+                "klicken; mehrere übereinander mit 1–9"
+            ),
+            lambda: FrontTool(self.scene, front.FrontKind.DRAWER),
+        )
         self.action_measure = self._tool_action(
             self.tr("&Messen"),
             "M",
@@ -400,7 +419,13 @@ class MainWindow(QMainWindow):
         insert_menu.addAction(tree.action_save_template)
         insert_menu.addSeparator()
         insert_menu.addActions(
-            [self.action_insert_divider, self.action_insert_shelf, self.action_insert_back]
+            [
+                self.action_insert_divider,
+                self.action_insert_shelf,
+                self.action_insert_back,
+                self.action_insert_door,
+                self.action_insert_drawer,
+            ]
         )
         insert_menu.addAction(self.action_seat_groove)
         insert_menu.addAction(self.action_split)
@@ -459,6 +484,11 @@ class MainWindow(QMainWindow):
                 ],
             ),
             ("check", self.tr("Prüfen"), [self.action_collisions]),
+            (
+                "tools",
+                self.tr("Werkzeuge"),
+                [self.action_rotate_mode, self.action_measure, self.action_set_distance],
+            ),
             None,  # second row
             (
                 "fit",
@@ -467,13 +497,10 @@ class MainWindow(QMainWindow):
                     self.action_insert_divider,
                     self.action_insert_shelf,
                     self.action_insert_back,
+                    self.action_insert_door,
+                    self.action_insert_drawer,
                     self.action_split,
                 ],
-            ),
-            (
-                "tools",
-                self.tr("Werkzeuge"),
-                [self.action_rotate_mode, self.action_measure, self.action_set_distance],
             ),
             (
                 "view",
@@ -486,6 +513,8 @@ class MainWindow(QMainWindow):
             (self.action_insert_divider, self.tr("Trennwand")),
             (self.action_insert_shelf, self.tr("Fachboden")),
             (self.action_insert_back, self.tr("Rückwand")),
+            (self.action_insert_door, self.tr("Tür")),
+            (self.action_insert_drawer, self.tr("Schublade")),
             (self.action_split, self.tr("Auftrennen")),
             (self.action_isolate, self.tr("Isolieren")),
             (self.action_xray, self.tr("Röntgen")),
@@ -509,9 +538,15 @@ class MainWindow(QMainWindow):
                 toolbar.addAction(action)
                 show_shortcut(action)
             self.toolbars[name] = toolbar
-        # undo/redo arrows speak for themselves (tooltip names them): room for more
-        for action in (self.action_undo, self.action_redo):
-            button = self.toolbars["edit"].widgetForAction(action)
+        # these icons speak for themselves (tooltip names them): room for more
+        for name, action in (
+            ("file", self.action_new),
+            ("file", self.action_open),
+            ("file", self.action_save),
+            ("edit", self.action_undo),
+            ("edit", self.action_redo),
+        ):
+            button = self.toolbars[name].widgetForAction(action)
             if isinstance(button, QToolButton):
                 button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
 

@@ -23,7 +23,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 from simpledesign.core.io import sdz
 from simpledesign.core.materials.edgeband import BandEdge, EdgeBand
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
-from simpledesign.core.model import arrange, backpanel, fit, split, transform
+from simpledesign.core.model import arrange, backpanel, fit, front, split, transform
 from simpledesign.core.model.document import Document, ref_key
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.joint import JointKind
@@ -130,6 +130,7 @@ class Controller(QObject):
         # Size formulas of new boards (length, width, thickness); see preferences.
         self.new_board_size = ("600", "300", "18")
         self.groove = fit.GrooveSettings()  # back panels in a groove
+        self.front_settings = front.FrontSettings()  # doors and drawers
 
     # ================================================================== state
     @property
@@ -303,6 +304,18 @@ class Controller(QObject):
         board_id = self.execute(self.tr("{0} einpassen").format(fit.BASE_NAMES[plan.kind]), change)
         self.set_selection([board_id])
         return board_id
+
+    def insert_front(self, plan: front.FrontPlan) -> list[str]:
+        """Add a door or drawer planned by the front tool."""
+        groups = {self.doc.boards[i].group_id for i in plan.board_ids}
+        group_id = groups.pop() if len(groups) == 1 else None
+        if plan.kind == front.FrontKind.DOOR:
+            text = self.tr("Tür einpassen")
+        else:
+            text = self.tr("Schublade einpassen")
+        ids = self.execute(text, lambda d: front.create(d, plan, group_id))
+        self.set_selection(ids[:1])
+        return ids
 
     def _group_of(self, plan: fit.InsertPlan) -> str | None:
         """The group of the parts the new board is joined to (if they share one)."""

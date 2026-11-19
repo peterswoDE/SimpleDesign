@@ -37,7 +37,7 @@ class Face:
 
 
 @dataclass(frozen=True, slots=True)
-class _Box:
+class Box:
     board_id: str
     lo: Vec3
     hi: Vec3
@@ -50,7 +50,7 @@ class _Box:
         return Face(self.lo[axis], self.lo_formula[axis], self.board_id, touching)
 
 
-def boxes(doc: Document, evaluation: Evaluation, exclude: Iterable[str] = ()) -> list[_Box]:
+def boxes(doc: Document, evaluation: Evaluation, exclude: Iterable[str] = ()) -> list[Box]:
     """World boxes of every visible, not rotated board copy."""
     skip = set(exclude)
     result = []
@@ -71,38 +71,46 @@ def boxes(doc: Document, evaluation: Evaluation, exclude: Iterable[str] = ()) ->
                 hi_f.append(f"{board.name}.{axis.value}2{suffix}")
             hi = (origin[0] + size[0], origin[1] + size[1], origin[2] + size[2])
             result.append(
-                _Box(board.id, origin, hi, (lo_f[0], lo_f[1], lo_f[2]), (hi_f[0], hi_f[1], hi_f[2]))
+                Box(board.id, origin, hi, (lo_f[0], lo_f[1], lo_f[2]), (hi_f[0], hi_f[1], hi_f[2]))
             )
     return result
 
 
-def _overlaps(box: _Box, axis: int, interval: Range) -> bool:
+def _overlaps(box: Box, axis: int, interval: Range) -> bool:
     return min(box.hi[axis], interval[1]) - max(box.lo[axis], interval[0]) > 1e-6
 
 
 def cast(
-    found: list[_Box], q: Vec3, axis: int, direction: int, ranges: dict[int, Range]
+    found: list[Box], q: Vec3, axis: int, direction: int, ranges: dict[int, Range]
 ) -> Face | None:
     """The nearest face seen from ``q`` along ``axis`` in ``direction`` (±1), of
     a box that overlaps ``ranges`` on the other axes."""
-    best: Face | None = None
+    box = cast_box(found, q, axis, direction, ranges)
+    return None if box is None else box.face(axis, high=direction < 0)
+
+
+def cast_box(
+    found: list[Box], q: Vec3, axis: int, direction: int, ranges: dict[int, Range]
+) -> Box | None:
+    """The box whose face :func:`cast` finds."""
+    best: Box | None = None
     for box in found:
         if not all(_overlaps(box, k, r) for k, r in ranges.items()):
             continue
         if direction > 0:
             if box.lo[axis] < q[axis] - 1e-6:
                 continue
-            if best is None or box.lo[axis] < best.value:
-                best = box.face(axis, high=False)
+            if best is None or box.lo[axis] < best.lo[axis]:
+                best = box
         else:
             if box.hi[axis] > q[axis] + 1e-6:
                 continue
-            if best is None or box.hi[axis] > best.value:
-                best = box.face(axis, high=True)
+            if best is None or box.hi[axis] > best.hi[axis]:
+                best = box
     return best
 
 
-def _point(q: Vec3, axis: int) -> Range:
+def point_range(q: Vec3, axis: int) -> Range:
     return q[axis] - PROBE, q[axis] + PROBE
 
 
@@ -119,7 +127,7 @@ class Compartment:
 
 
 def _fill_open_sides(
-    found: list[_Box], lo: list[Face | None], hi: list[Face | None]
+    found: list[Box], lo: list[Face | None], hi: list[Face | None]
 ) -> Compartment | None:
     """Open sides take the extent of the boards around (e.g. an open front:
     as deep as the side walls)."""
@@ -158,7 +166,7 @@ def compartment(
     shifted[normal] += sign * 0.5
     q = (shifted[0], shifted[1], shifted[2])
     a, b = (k for k in range(3) if k != normal)
-    on_line = {a: _point(q, a), b: _point(q, b)}
+    on_line = {a: point_range(q, a), b: point_range(q, b)}
     back = cast(found, q, normal, -sign, on_line)
     front = cast(found, q, normal, sign, on_line)
     near = back.value if back is not None else q[normal] - sign * 0.5
@@ -168,7 +176,7 @@ def compartment(
     lo: list[Face | None] = [None, None, None]
     hi: list[Face | None] = [None, None, None]
     for axis, other in ((a, b), (b, a)):
-        ranges = {other: _point(q, other), normal: depth}
+        ranges = {other: point_range(q, other), normal: depth}
         lo[axis] = cast(found, q, axis, -1, ranges)
         hi[axis] = cast(found, q, axis, 1, ranges)
     if sign > 0:
@@ -178,13 +186,13 @@ def compartment(
     return _fill_open_sides(found, lo, hi)
 
 
-def _ref(formula: str) -> str:
+def ref(formula: str) -> str:
     """A formula that can be subtracted safely."""
     return formula if " " not in formula else f"({formula})"
 
 
 def span(lo: Face, hi: Face) -> str:
-    return f"{hi.formula} - {_ref(lo.formula)}"
+    return f"{hi.formula} - {ref(lo.formula)}"
 
 
 # ====================================================================== new boards
@@ -326,7 +334,7 @@ def back_compartment(
     lo: list[Face | None] = [None, comp.lo[1], None]
     hi: list[Face | None] = [None, rear, None]
     for axis, other in ((0, 2), (2, 0)):
-        ranges = {other: _point(q, other), 1: slab}
+        ranges = {other: point_range(q, other), 1: slab}
         lo[axis] = cast(found, q, axis, -1, ranges)
         hi[axis] = cast(found, q, axis, 1, ranges)
     return _fill_open_sides(found, lo, hi)
@@ -381,7 +389,7 @@ def seat_in_groove(
     faces: dict[int, tuple[Face, Face]] = {}
     for axis in (k for k in range(3) if k != t):
         (other,) = (k for k in range(3) if k not in (t, axis))
-        ranges = {other: _point(q, other), t: slab}
+        ranges = {other: point_range(q, other), t: slab}
         a = cast(found, q, axis, -1, ranges)
         b = cast(found, q, axis, 1, ranges)
         if a is None or b is None:

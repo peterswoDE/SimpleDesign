@@ -13,11 +13,12 @@ from typing import TYPE_CHECKING
 
 import pyvista as pv
 from PySide6.QtCore import QCoreApplication, Qt
+from vtkmodules.vtkFiltersCore import vtkAppendPolyData
 from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
 from simpledesign.app.snapping import Vec3
 from simpledesign.core.materials.library import builtin_material
-from simpledesign.core.model import fit
+from simpledesign.core.model import fit, front
 from simpledesign.ui.texts import number
 
 if TYPE_CHECKING:
@@ -233,6 +234,143 @@ class InsertTool(Tool):
             return False
         if self._last is not None:
             self._show(self.plan_at(*self._last))
+        return True
+
+
+class FrontTool(Tool):
+    """Point into a compartment: a door or drawer closes its front (preview);
+    a click adds it. Keys change the settings while the tool runs."""
+
+    def __init__(self, scene: Scene, kind: front.FrontKind) -> None:
+        super().__init__(scene)
+        self.kind = kind
+        self.plan: front.FrontPlan | None = None
+        self._last: tuple[int, int] | None = None
+        self.preview = _box_actor()
+
+    @property
+    def settings(self) -> front.FrontSettings:
+        return self.scene.controller.front_settings
+
+    def start(self) -> None:
+        self.scene.renderer.AddActor(self.preview)
+        self._show(None)
+
+    def finish(self) -> None:
+        self.scene.renderer.RemoveActor(self.preview)
+        self.scene.viewport.render()
+
+    def _thickness(self, material_id: str) -> float:
+        doc = self.scene.controller.doc
+        material = doc.materials.get(material_id) or builtin_material(material_id)
+        return material.thickness
+
+    def plan_at(self, x: int, y: int) -> front.FrontPlan | None:
+        scene = self.scene
+        hit = scene.pick_face(x, y)
+        if hit is None:
+            return None
+        board_id, point, normal, sign = hit
+        controller = scene.controller
+        doc, evaluation = controller.doc, controller.evaluation
+        comp = fit.compartment(doc, evaluation, point, normal, sign)
+        if comp is None:
+            return None
+        s = self.settings
+        door = self.kind == front.FrontKind.DOOR
+        op = front.opening(doc, evaluation, comp, point, s.whole and door)
+        if op is None:
+            return None
+        # material and thickness of the thickest carcass part around
+        around = op.board_ids or [board_id]
+        source = max(around, key=lambda b: evaluation.boards[b].thickness)
+        material_id = doc.boards[source].material_id
+        thickness = front.Term(
+            doc.display_expression(source, "thickness"), evaluation.boards[source].thickness
+        )
+        if door:
+            return front.plan_door(op, s, material_id, thickness)
+        return front.plan_drawer(
+            op,
+            s,
+            material_id,
+            thickness,
+            self._thickness(s.box_material_id),
+            self._thickness(s.bottom_material_id),
+        )
+
+    def _show(self, plan: front.FrontPlan | None) -> None:
+        self.plan = plan
+        actor = self.preview
+        actor.SetVisibility(plan is not None)
+        if plan is not None:
+            append = vtkAppendPolyData()
+            for lo, size in plan.boxes():
+                bounds = (lo[0], lo[0] + size[0], lo[1], lo[1] + size[1], lo[2], lo[2] + size[2])
+                append.AddInputData(pv.Box(bounds=bounds))
+            append.Update()
+            mapper = actor.GetMapper()
+            assert isinstance(mapper, vtkPolyDataMapper)
+            mapper.SetInputData(append.GetOutput())
+        self._status(plan)
+        self.scene.viewport.render()
+
+    def describe(self) -> str:
+        """Current settings, as shown in the status line."""
+        s = self.settings
+        overlay = s.mounting == front.Mounting.OVERLAY
+        mounting = _tr("aufliegend") if overlay else _tr("einliegend")
+        if self.kind == front.FrontKind.DOOR:
+            leaves = _tr("zweiflügelig") if s.leaves == 2 else _tr("einflügelig")
+            span = _tr("ganzes Möbel") if s.whole else _tr("Fach")
+            what = f"{mounting}, {leaves}, {span}"
+        else:
+            what = _tr("{0}, {1} übereinander").format(mounting, s.drawers)
+        return what + ", " + _tr("Fuge {0} mm").format(number(s.gap))
+
+    def _status(self, plan: front.FrontPlan | None) -> None:
+        if self.kind == front.FrontKind.DOOR:
+            name = _tr("Tür")
+            keys = _tr("L: auf-/einliegend, 1/2: Flügel, G: ganzes Möbel/Fach")
+        else:
+            name = _tr("Schublade")
+            keys = _tr("L: auf-/einliegend, 1–9: Anzahl")
+        if plan is None:
+            text = _tr("{0} einpassen ({1}): in ein Fach zeigen   ({2}, Esc: beenden)")
+            self.scene.status_message.emit(text.format(name, self.describe(), keys))
+            return
+        size = " × ".join(number(v) for v in plan.parts[0].boxes[0][1])
+        text = _tr("{0}: {1}, Front {2} mm   (Klick: einfügen, {3}, Esc: beenden)")
+        self.scene.status_message.emit(text.format(name, self.describe(), size, keys))
+
+    # ------------------------------------------------------------------ events
+    def hover(self, x: int, y: int) -> None:
+        self._last = (x, y)
+        self._show(self.plan_at(x, y))
+
+    def press(self, x: int, y: int, ctrl: bool) -> bool:
+        plan = self.plan_at(x, y)
+        if plan is None:
+            return False  # empty space: orbit
+        self.scene.controller.insert_front(plan)
+        self._show(None)
+        return True
+
+    def type_key(self, key: int, text: str) -> bool:
+        s = self.settings
+        door = self.kind == front.FrontKind.DOOR
+        if key == Qt.Key.Key_L:
+            overlay = s.mounting == front.Mounting.OVERLAY
+            s.mounting = front.Mounting.INSET if overlay else front.Mounting.OVERLAY
+        elif key == Qt.Key.Key_G and door:
+            s.whole = not s.whole
+        elif text and text in "12" and door:
+            s.leaves = int(text)
+        elif text and text in "123456789" and not door:
+            s.drawers = int(text)
+        else:
+            return False
+        self._show(self.plan_at(*self._last) if self._last is not None else None)
         return True
 
 
