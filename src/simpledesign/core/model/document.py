@@ -358,6 +358,14 @@ class Document:
         board = self.boards[board_id]
         return self.materials[board.material_id].has_grain and not board.ignore_grain
 
+    def new_grain_group(self) -> str:
+        """An unused grain group name: ``Maserung_1``, ``Maserung_2`` …"""
+        used = {b.grain_group for b in self.boards.values()}
+        k = 1
+        while f"Maserung_{k}" in used:
+            k += 1
+        return f"Maserung_{k}"
+
     def prune_materials(self) -> None:
         used = {board.material_id for board in self.boards.values()}
         for material_id in list(self.materials):

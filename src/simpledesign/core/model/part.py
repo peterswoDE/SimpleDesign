@@ -159,6 +159,9 @@ class Board:
     # Grain direction does not matter for this part (e.g. hidden inner parts):
     # the cut list may turn it. Has no effect for materials without grain.
     ignore_grain: bool = False
+    # Grain group (Maserung über Fronten): parts with the same name are cut
+    # from one piece so the grain runs on (see cutlist.optimize).
+    grain_group: str | None = None
     # Back panel ("Rückwand"): other parts stop at its front face.
     back_panel: bool = False
     # Goes through the back panel to the rear edge (splits the panel).

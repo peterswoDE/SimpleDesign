@@ -101,6 +101,14 @@ class PropertiesPanel(QScrollArea):
         )
         self.ignore_grain_check.clicked.connect(self._on_ignore_grain)
         form.addRow("", self.ignore_grain_check)
+        self.grain_group_label = QLabel()
+        self.grain_group_label.setToolTip(
+            self.tr(
+                "Teile einer Maserungsgruppe werden im Schnittplan zusammenhängend aus "
+                "einem Stück geschnitten (Bearbeiten → Maserung durchlaufend)"
+            )
+        )
+        form.addRow(self.tr("Maserungsgruppe:"), self.grain_group_label)
         self.orientation_combo = QComboBox()
         for orientation in Orientation:
             self.orientation_combo.addItem(orientation_label(orientation), orientation.value)
@@ -355,6 +363,7 @@ class PropertiesPanel(QScrollArea):
                 material = doc.materials[board.material_id]
                 self.ignore_grain_check.setEnabled(material.has_grain)
                 self.ignore_grain_check.setChecked(board.ignore_grain or not material.has_grain)
+                self.grain_group_label.setText(board.grain_group or "–")
                 index = self.orientation_combo.findData(board.orientation.value)
                 self.orientation_combo.setCurrentIndex(index)
                 self._refresh_back(board.id)

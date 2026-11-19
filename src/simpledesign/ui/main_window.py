@@ -356,6 +356,20 @@ class MainWindow(QMainWindow):
             lambda: ExtendTool(self.scene),
         )
         self.scene.tool_changed.connect(self._sync_tool_actions)
+        self.action_grain_join = QAction(self.tr("&Maserung durchlaufend"), self)
+        self.action_grain_join.setToolTip(
+            self.tr(
+                "Die ausgewählten Teile (z. B. Fronten übereinander) im Schnittplan "
+                "zusammenhängend aus einem Stück schneiden"
+            )
+        )
+        self.action_grain_join.triggered.connect(
+            lambda: self.controller.set_grain_group(self._selected_boards(), True)
+        )
+        self.action_grain_split = QAction(self.tr("Maserungsgruppe auf&lösen"), self)
+        self.action_grain_split.triggered.connect(
+            lambda: self.controller.set_grain_group(self._selected_boards(), False)
+        )
         self.action_seat_groove = QAction(self.tr("In &Nut setzen…"), self)
         self.action_seat_groove.setToolTip(
             self.tr("Platte zwischen die Teile ringsum einpassen und mit Nuten verbinden")
@@ -496,6 +510,8 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.action_split)
         edit_menu.addAction(self.action_set_distance)
         edit_menu.addAction(self.action_extend)
+        edit_menu.addSeparator()
+        edit_menu.addActions([self.action_grain_join, self.action_grain_split])
 
         insert_menu = menu_bar.addMenu(self.tr("&Einfügen"))
         insert_menu.addActions(
@@ -958,11 +974,18 @@ class MainWindow(QMainWindow):
     def _distribute(self, axis: Axis) -> None:
         self.controller.distribute(self.controller.selection, axis)
 
+    def _selected_boards(self) -> list[str]:
+        doc = self.controller.doc
+        return [i for i in self.controller.selection if i in doc.boards]
+
     def _update_selection_info(self) -> None:
         """Arrange actions and the size of the selection (measuring)."""
         selection = self.controller.selection
         for action, minimum in self.align_actions:
             action.setEnabled(len(selection) >= minimum)
+        boards = self._selected_boards()
+        self.action_grain_join.setEnabled(len(boards) >= 2)
+        self.action_grain_split.setEnabled(bool(boards))
         doc, evaluation = self.controller.doc, self.controller.evaluation
         box = arrange.bounds(doc, selection, evaluation) if selection else None
         if box is None:

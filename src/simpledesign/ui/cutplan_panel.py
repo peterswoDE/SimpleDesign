@@ -53,6 +53,7 @@ PAPER = QColor("#ffffff")
 WASTE = QColor("#d0d0d0")
 OUTLINE = QColor("#404040")
 WARNING = QColor("#b00020")
+GRAIN_BLOCK = QColor("#8a5a00")
 
 
 def _tr(text: str) -> str:
@@ -151,6 +152,16 @@ def _sheet_block(
                 for k, part in enumerate(lines):
                     row = QRectF(inner.left(), inner.top() + k * line * 0.8, inner.width(), line)
                     _label(painter, row, part, Qt.AlignmentFlag.AlignLeft)
+        # grain blocks: one piece, cut apart after the grain was matched
+        pen = QPen(GRAIN_BLOCK)
+        pen.setWidthF(2.0)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for b in sheet.blocks:
+            painter.drawRect(
+                QRectF(b.x * scale, y0 + b.y * scale, b.length * scale, b.width * scale)
+            )
         painter.restore()
 
     return Block(line + sheet.width * scale + line * 0.6, draw)

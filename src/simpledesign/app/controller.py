@@ -251,6 +251,20 @@ class Controller(QObject):
 
         self.execute(self.tr("Umleimer ändern"), change)
 
+    def set_grain_group(self, board_ids: Iterable[str], join: bool) -> str | None:
+        """Put the boards into one new grain group (``join``) or take them out
+        of theirs. Returns the group name when joining."""
+        ids = [i for i in board_ids if i in self.doc.boards]
+        name = self.doc.new_grain_group() if join else None
+
+        def change(d: Document) -> None:
+            for board_id in ids:
+                d.boards[board_id].grain_group = name
+
+        text = "Maserung durchlaufend" if join else "Maserungsgruppe auflösen"
+        self.execute(self.tr(text), change)
+        return name
+
     def set_ignore_grain(self, board_ids: Iterable[str], ignore: bool) -> None:
         ids = [i for i in board_ids if i in self.doc.boards]
 

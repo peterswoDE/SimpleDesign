@@ -16,6 +16,15 @@ emptiest last sheet, i.e. the largest reusable offcut) wins.
 Kerf (saw blade width): each part occupies ``size + kerf``. The usable area
 is enlarged by one kerf, so a part may end exactly at the trimmed edge.
 
+Grain groups (Maserung über Fronten)
+------------------------------------
+Parts of one grain group (e.g. drawer fronts above each other) are cut from
+one piece so the grain runs on from part to part. They are combined into one
+block before packing: parts that lie in a column in the furniture follow
+each other along the grain (in their order in the furniture), columns lie
+side by side. The block is packed like one part and then split again. A
+block larger than the sheet is packed part by part.
+
 1D - bars (construction timber)
 -------------------------------
 First-fit decreasing: longest part first, into the first bar where it fits.
@@ -31,6 +40,7 @@ from simpledesign.core.cutlist.cutlist import cut_size
 from simpledesign.core.materials.material import Material
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation
+from simpledesign.core.model.part import Axis
 from simpledesign.core.model.settings import CutSettings
 
 EPS = 1e-6
@@ -45,6 +55,16 @@ class Piece:
     length: float  # along the grain
     width: float
     has_grain: bool = True
+    # Grain block: the parts and where they lie in it (x along the grain, y).
+    members: tuple[tuple[Piece, float, float], ...] = ()
+
+
+def single_pieces(pieces: Sequence[Piece]) -> list[Piece]:
+    """Grain blocks split into their parts."""
+    result: list[Piece] = []
+    for piece in pieces:
+        result += [m for m, _x, _y in piece.members] if piece.members else [piece]
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +83,8 @@ class Sheet:
     width: float
     trim: float
     placements: list[Placement] = field(default_factory=list)
+    # Outlines of the grain blocks (name = grain group).
+    blocks: list[Placement] = field(default_factory=list)
 
     @property
     def area(self) -> float:
@@ -158,7 +180,15 @@ def _pack_2d(
             continue  # larger than a sheet - the caller filters these out
         _, s, r, pl, pw, rotated = best
         rect = free[s].pop(r)
-        sheets[s].placements.append(Placement(piece.name, rect.x, rect.y, pl, pw, rotated))
+        placement = Placement(piece.name, rect.x, rect.y, pl, pw, rotated)
+        if piece.members:  # never rotated: blocks keep the grain
+            sheets[s].blocks.append(placement)
+            sheets[s].placements += [
+                Placement(m.name, rect.x + dx, rect.y + dy, m.length, m.width, False)
+                for m, dx, dy in piece.members
+            ]
+        else:
+            sheets[s].placements.append(placement)
         need_l, need_w = pl + kerf, pw + kerf
         rest_l, rest_w = rect.length - need_l, rect.width - need_w
         # One straight cut splits the rest of the rectangle into two pieces.
@@ -180,6 +210,14 @@ def pack_sheets(
 
     Returns the sheets and the pieces that are larger than a sheet.
     """
+    # blocks larger than the sheet: their parts one by one
+    pieces = [
+        q
+        for p in pieces
+        for q in (
+            [p] if not p.members or fits_sheet(p, length, width, trim) else single_pieces([p])
+        )
+    ]
     fitting = [p for p in pieces if fits_sheet(p, length, width, trim)]
     too_large = [p for p in pieces if not fits_sheet(p, length, width, trim)]
     best: list[Sheet] | None = None
@@ -241,9 +279,10 @@ class MaterialPlan:
     @property
     def demand(self) -> float:
         """Net demand of the parts: m² for sheets, running metres for bars."""
+        parts = single_pieces(self.pieces)
         if self.material.is_linear:
-            return sum(p.length for p in self.pieces) / 1000
-        return sum(p.length * p.width for p in self.pieces) / 1e6
+            return sum(p.length for p in parts) / 1000
+        return sum(p.length * p.width for p in parts) / 1e6
 
     @property
     def utilisation(self) -> float | None:
@@ -263,13 +302,59 @@ class MaterialPlan:
         return self.stock_count * self.material.price
 
 
+@dataclass(frozen=True, slots=True)
+class _Laid:
+    """A part of a grain group and where it lies in the furniture."""
+
+    piece: Piece
+    along: float  # start along the grain (world)
+    across: float  # start across the grain, in the face plane (world)
+
+
+def grain_block(name: str, parts: Sequence[_Laid], kerf: float) -> Piece:
+    """One block from the parts of a grain group (see module doc)."""
+    columns: list[list[_Laid]] = []
+    for part in sorted(parts, key=lambda p: (p.across, p.along)):
+        column = columns[-1] if columns else None
+        if column is not None and part.across < max(p.across + p.piece.width for p in column) - EPS:
+            column.append(part)
+        else:
+            columns.append([part])
+    members: list[tuple[Piece, float, float]] = []
+    y = 0.0
+    length = 0.0
+    for column in columns:
+        x = 0.0
+        for part in sorted(column, key=lambda p: p.along):
+            members.append((part.piece, x, y))
+            x += part.piece.length + kerf
+        length = max(length, x - kerf)
+        y += max(p.piece.width for p in column) + kerf
+    return Piece(name, length, y - kerf, True, tuple(members))
+
+
 def pieces_by_material(doc: Document, evaluation: Evaluation) -> dict[str, list[Piece]]:
     result: dict[str, list[Piece]] = {}
+    groups: dict[tuple[str, str, Axis, Axis], list[_Laid]] = {}
     for board in doc.boards.values():
+        orientation = board.orientation
+        grouped = board.grain_group is not None and doc.has_grain(board.id)
         for shape in evaluation.machining.parts[board.id]:
             (length, width, _), _signature, _edges = cut_size(doc, board, shape)
             piece = Piece(board.name, length, width, doc.has_grain(board.id))
-            result.setdefault(board.material_id, []).append(piece)
+            if grouped and board.grain_group is not None and shape.rotation is None:
+                along, across = orientation.length_axis, orientation.width_axis
+                key = (board.material_id, board.grain_group, along, across)
+                laid = _Laid(piece, shape.origin[along.position], shape.origin[across.position])
+                groups.setdefault(key, []).append(laid)
+            else:
+                result.setdefault(board.material_id, []).append(piece)
+    for (material_id, name, _along, _across), parts in groups.items():
+        pieces = result.setdefault(material_id, [])
+        if len(parts) == 1:
+            pieces.append(parts[0].piece)
+        else:
+            pieces.append(grain_block(name, parts, doc.cut_settings.kerf))
     return result
 
 
@@ -279,7 +364,7 @@ def plan_material(material: Material, pieces: list[Piece], settings: CutSettings
         return plan
     if material.is_linear:
         plan.bars, plan.too_large = pack_bars(
-            pieces, material.stock_length, settings.kerf, settings.crosscut_allowance
+            single_pieces(pieces), material.stock_length, settings.kerf, settings.crosscut_allowance
         )
     elif material.stock_width is not None:
         plan.sheets, plan.too_large = pack_sheets(

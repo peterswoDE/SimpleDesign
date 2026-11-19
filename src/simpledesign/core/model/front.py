@@ -431,6 +431,10 @@ def create(doc: Document, plan: FrontPlan, group_id: str | None) -> list[str]:
             if prop in part.expressions:
                 doc.set_expression(board.id, prop, fill(part.expressions[prop]))
         ids.append(board.id)
+    # several fronts above / beside each other: grain runs on across them
+    for part, board_id in zip(plan.parts, ids, strict=True):
+        if part.key == "front" and part.expressions.get("count", "1").strip() != "1":
+            doc.boards[board_id].grain_group = doc.new_grain_group()
     by_key = {part.key: board_id for part, board_id in zip(plan.parts, ids, strict=True)}
     for kind, key, carrier in plan.fittings:
         if carrier in doc.boards:
