@@ -15,6 +15,9 @@
   board about its centre (15° steps, Shift: 1°).
 * While dragging an arrow, handle or ring a value can be typed: distance,
   new size or angle; Enter applies it.
+* Section view: one world-space clipping plane on every part mapper (the
+  mappers convert it per actor) hides one side; the exact cut faces are drawn
+  as caps in the material colour with a hatch texture.
 """
 
 from __future__ import annotations
@@ -26,12 +29,14 @@ import numpy as np
 import pyvista as pv
 from PySide6.QtCore import QObject, Qt, Signal
 from vtkmodules.vtkCommonCore import vtkCommand
+from vtkmodules.vtkCommonDataModel import vtkPlane
 from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
     vtkCellPicker,
     vtkPolyDataMapper,
     vtkRenderer,
+    vtkTexture,
 )
 
 from simpledesign.app.controller import Controller
@@ -40,6 +45,7 @@ from simpledesign.core.geometry.collision import Collision, find_collisions
 from simpledesign.core.geometry.explode import explode_offsets
 from simpledesign.core.geometry.mesh import part_mesh
 from simpledesign.core.geometry.placement import world_bounds
+from simpledesign.core.geometry.section import SectionPlane, section_cap
 from simpledesign.core.model import fit, transform
 from simpledesign.core.model.machining import PartShape
 from simpledesign.core.model.part import Axis
@@ -65,6 +71,8 @@ EDGE_COLOR = "#4b4136"
 TRANSPARENT_OPACITY = 0.3
 AXIS_COLORS = {Axis.X: "#d64545", Axis.Y: "#3fa34d", Axis.Z: "#3b6fd6"}
 HIGHLIGHT_COLOR = "#ffcc33"
+HATCH_SPACING = 8.0  # mm between hatch lines on cut faces
+HATCH_TEXELS = 32
 UNIT = {Axis.X: (1.0, 0.0, 0.0), Axis.Y: (0.0, 1.0, 0.0), Axis.Z: (0.0, 0.0, 1.0)}
 AXES = (Axis.X, Axis.Y, Axis.Z)
 # Looking down at least this steeply (|view direction · Z|) drags parts on the floor plane.
@@ -176,11 +184,15 @@ class Scene(QObject):
         self._known: set[str] = set()
         self._xray = False
         self._explode = 0.0  # exploded view: 0 = assembled
+        self._offsets: dict[str, list[Vec3]] = {}  # exploded display offsets
+        self._section: SectionPlane | None = None
+        self._clip = vtkPlane()
         self._show_collisions = False
         self.collisions: list[Collision] = []
         self._collision_key: tuple[int, frozenset[str]] | None = None
 
         self._create_overlay()
+        self._create_caps()
         viewport.interaction_style.pointer_handler = self
         controller.document_changed.connect(self.rebuild)
         controller.selection_changed.connect(self.rebuild)
@@ -204,6 +216,9 @@ class Scene(QObject):
                 edge_mapper.SetInputData(edges)
             else:
                 edge_mapper.SetInputData(_edges(size))
+            if self._section is not None:
+                face_mapper.AddClippingPlane(self._clip)
+                edge_mapper.AddClippingPlane(self._clip)
             self._meshes[key] = (face_mapper, edge_mapper)
         return self._meshes[key]
 
@@ -268,6 +283,106 @@ class Scene(QObject):
     @property
     def exploded(self) -> bool:
         return self._explode > 0
+
+    @property
+    def section(self) -> SectionPlane | None:
+        return self._section
+
+    @section.setter
+    def section(self, plane: SectionPlane | None) -> None:
+        """Cut the view open (None: whole parts again)."""
+        if plane == self._section:
+            return
+        was = self._section is not None
+        self._section = plane
+        self._update_section()
+        self.viewport.render()
+        if was != (plane is not None):
+            self.view_mode_changed.emit()
+
+    def _update_section(self) -> None:
+        plane = self._section
+        mappers = [m for pair in self._meshes.values() for m in pair]
+        mappers.append(self._collision_mapper)
+        for mapper in mappers:
+            mapper.RemoveAllClippingPlanes()
+        if plane is None:
+            self._cap_actor.VisibilityOff()
+            self._cap_edge_actor.VisibilityOff()
+            return
+        self._clip.SetOrigin(*plane.origin)
+        self._clip.SetNormal(*plane.normal)
+        for mapper in mappers:
+            mapper.AddClippingPlane(self._clip)
+        doc = self.controller.doc
+        evaluation = self.controller.evaluation
+        caps = []
+        for board_id in self._board_actors:
+            board = doc.boards[board_id]
+            color = (
+                SELECTION_COLOR
+                if board_id in self._selected_boards
+                else doc.materials[board.material_id].color
+            )
+            rgb = np.array([round(c * 255) for c in _rgb(color)], dtype=np.uint8)
+            moved = self._offsets.get(board_id)
+            for copy, shape in enumerate(evaluation.machining.parts[board_id]):
+                cap = section_cap(shape, plane, moved[copy] if moved else (0.0, 0.0, 0.0))
+                if cap is None:
+                    continue
+                mesh = pv.PolyData(cap.points, cap.faces)
+                mesh.point_data["rgb"] = np.tile(rgb, (mesh.n_points, 1))
+                caps.append(mesh)
+        if not caps:
+            self._cap_actor.VisibilityOff()
+            self._cap_edge_actor.VisibilityOff()
+            return
+        merged = caps[0] if len(caps) == 1 else pv.merge(caps, merge_points=False)
+        u, v = (plane.axis + 1) % 3, (plane.axis + 2) % 3
+        merged.active_texture_coordinates = merged.points[:, [u, v]] / HATCH_SPACING
+        self._cap_mapper.SetInputData(merged)
+        self._cap_mapper.SelectColorArray("rgb")
+        outline = merged.extract_feature_edges(
+            boundary_edges=True, feature_edges=False, manifold_edges=False, non_manifold_edges=False
+        )
+        self._cap_edge_mapper.SetInputData(outline)
+        self._cap_actor.VisibilityOn()
+        self._cap_edge_actor.VisibilityOn()
+
+    def _create_caps(self) -> None:
+        n = HATCH_TEXELS
+        i, j = np.mgrid[0:n, 0:n]
+        # one soft diagonal line per tile: dark on white, times the vertex colour
+        d = np.minimum((i + j) % n, n - (i + j) % n)
+        shade = np.clip(70 + (d - 1.5) * 90, 70, 255).astype(np.uint8)
+        image = pv.ImageData(dimensions=(n, n, 1))
+        image.point_data["texels"] = np.repeat(shade.reshape(-1, 1), 3, axis=1)
+        image.set_active_scalars("texels")
+        texture = vtkTexture()
+        texture.SetInputData(image)
+        texture.RepeatOn()
+        texture.InterpolateOn()
+        self._cap_mapper = vtkPolyDataMapper()
+        self._cap_mapper.SetScalarModeToUsePointFieldData()
+        self._cap_mapper.SetColorModeToDirectScalars()
+        self._cap_actor = vtkActor()
+        self._cap_actor.SetMapper(self._cap_mapper)
+        self._cap_actor.SetTexture(texture)
+        self._cap_actor.GetProperty().SetLighting(False)
+        self._cap_actor.PickableOff()
+        self._cap_actor.VisibilityOff()
+        self._cap_edge_mapper = vtkPolyDataMapper()
+        self._cap_edge_mapper.ScalarVisibilityOff()
+        self._cap_edge_actor = vtkActor()
+        self._cap_edge_actor.SetMapper(self._cap_edge_mapper)
+        edge_prop = self._cap_edge_actor.GetProperty()
+        edge_prop.SetColor(*_rgb(EDGE_COLOR))
+        edge_prop.SetLighting(False)
+        edge_prop.SetLineWidth(1.5)
+        self._cap_edge_actor.PickableOff()
+        self._cap_edge_actor.VisibilityOff()
+        self.renderer.AddActor(self._cap_actor)
+        self.renderer.AddActor(self._cap_edge_actor)
 
     @property
     def show_collisions(self) -> bool:
@@ -339,6 +454,7 @@ class Scene(QObject):
             if self._explode > 0
             else {}
         )
+        self._offsets = offsets
         for board in doc.boards.values():
             if not doc.is_visible(board) or self._hidden_by_isolation(board.id):
                 continue
@@ -385,6 +501,8 @@ class Scene(QObject):
                 self.renderer.RemoveActor(edge)
             del self._pool[used:]
         self._update_collisions(set() if self.exploded else set(self._board_actors))
+        if self._section is not None:
+            self._update_section()
         self._place_gizmo()
         self.viewport.render()
 
@@ -455,8 +573,13 @@ class Scene(QObject):
         for board_id in board_ids:
             if board_id not in self._board_actors:
                 continue
-            for shape in parts.get(board_id, []):
+            moved = self._offsets.get(board_id)
+            for copy, shape in enumerate(parts.get(board_id, [])):
                 lo, hi = world_bounds(shape.origin, shape.size, shape.rotation)
+                if moved:
+                    d = moved[copy]
+                    lo = (lo[0] + d[0], lo[1] + d[1], lo[2] + d[2])
+                    hi = (hi[0] + d[0], hi[1] + d[1], hi[2] + d[2])
                 lows.append(lo)
                 highs.append(hi)
         if not lows:

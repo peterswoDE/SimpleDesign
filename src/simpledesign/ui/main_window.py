@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
@@ -10,6 +11,8 @@ from PySide6.QtCore import QPoint, QSettings, Qt
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
+    QComboBox,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
@@ -26,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from simpledesign import __version__
 from simpledesign.app.controller import Controller
+from simpledesign.core.geometry.section import SectionPlane
 from simpledesign.core.io import sdz
 from simpledesign.core.io.export import ExportError, export
 from simpledesign.core.model import arrange, fit, front
@@ -395,6 +399,39 @@ class MainWindow(QMainWindow):
         explode_layout.addWidget(self.explode_slider)
         self.statusBar().addPermanentWidget(self.explode_box)
         self.explode_box.hide()
+        self.action_section = QAction(self.tr("S&chnittansicht"), self)
+        self.action_section.setCheckable(True)
+        self.action_section.setShortcut(QKeySequence("C"))
+        self.action_section.setToolTip(
+            self.tr("Modell an einer Ebene aufschneiden, Schnittflächen schraffiert")
+        )
+        self.action_section.toggled.connect(self._section)
+        self.section_axis = QComboBox()
+        self.section_axis.addItems(["X", "Y", "Z"])
+        self.section_axis.setToolTip(self.tr("Richtung, quer zu der geschnitten wird"))
+        self.section_axis.currentIndexChanged.connect(self._section_axis_changed)
+        self.section_slider = QSlider(Qt.Orientation.Horizontal)
+        self.section_slider.setFixedWidth(160)
+        self.section_slider.setToolTip(self.tr("Lage der Schnittebene"))
+        self.section_slider.valueChanged.connect(self._apply_section)
+        self.section_value = QLabel()
+        self.section_value.setMinimumWidth(60)
+        self.section_flip = QCheckBox(self.tr("Umkehren"))
+        self.section_flip.setToolTip(self.tr("Die andere Seite des Schnitts zeigen"))
+        self.section_flip.toggled.connect(self._apply_section)
+        self.section_box = QWidget()
+        section_layout = QHBoxLayout(self.section_box)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.addWidget(QLabel(self.tr("Schnitt:")))
+        for widget in (
+            self.section_axis,
+            self.section_slider,
+            self.section_value,
+            self.section_flip,
+        ):
+            section_layout.addWidget(widget)
+        self.statusBar().addPermanentWidget(self.section_box)
+        self.section_box.hide()
         self.action_collisions = QAction(self.tr("&Kollisionen"), self)
         self.action_collisions.setCheckable(True)
         self.action_collisions.setShortcut(QKeySequence("K"))
@@ -491,7 +528,13 @@ class MainWindow(QMainWindow):
         view_menu.addActions([self.action_measure, self.action_measure_points])
         view_menu.addSeparator()
         view_menu.addActions(
-            [self.action_isolate, self.action_xray, self.action_explode, self.action_collisions]
+            [
+                self.action_isolate,
+                self.action_xray,
+                self.action_explode,
+                self.action_section,
+                self.action_collisions,
+            ]
         )
         view_menu.addSeparator()
         for dock in (
@@ -556,6 +599,7 @@ class MainWindow(QMainWindow):
                     self.action_isolate,
                     self.action_xray,
                     self.action_explode,
+                    self.action_section,
                     *self.view_actions.values(),
                 ],
             ),
@@ -571,6 +615,7 @@ class MainWindow(QMainWindow):
             (self.action_isolate, self.tr("Isolieren")),
             (self.action_xray, self.tr("Röntgen")),
             (self.action_explode, self.tr("Explosion")),
+            (self.action_section, self.tr("Schnitt")),
             (self.view_actions["iso"], self.tr("Iso")),
         ):
             action.setIconText(short)
@@ -750,6 +795,45 @@ class MainWindow(QMainWindow):
         if self.action_explode.isChecked():
             self.scene.explode = value / 100
 
+    def _section(self, on: bool) -> None:
+        self.section_box.setVisible(on)
+        if on:
+            self._section_range(centre=self.section_slider.maximum() == 0)
+        self._apply_section()
+
+    def _section_range(self, centre: bool) -> None:
+        """Slider over the shown model along the cut axis."""
+        axis = self.section_axis.currentIndex()
+        box = self.scene.bounds(set(self.controller.doc.boards))
+        lo, hi = (box[0][axis], box[1][axis]) if box else (0.0, 1000.0)
+        slider = self.section_slider
+        slider.blockSignals(True)
+        slider.setRange(math.floor(lo), max(math.ceil(hi), math.floor(lo) + 1))
+        if centre or not slider.minimum() < slider.value() < slider.maximum():
+            slider.setValue(round((lo + hi) / 2))
+        slider.blockSignals(False)
+        if centre:
+            # keep the half away from the camera: the cut faces look at you
+            camera = self.scene.renderer.GetActiveCamera().GetPosition()
+            self.section_flip.blockSignals(True)
+            self.section_flip.setChecked(camera[axis] < (lo + hi) / 2)
+            self.section_flip.blockSignals(False)
+
+    def _section_axis_changed(self) -> None:
+        if self.action_section.isChecked():
+            self._section_range(centre=True)
+            self._apply_section()
+
+    def _apply_section(self) -> None:
+        position = self.section_slider.value()
+        self.section_value.setText(f"{position} mm")
+        if not self.action_section.isChecked():
+            self.scene.section = None
+            return
+        self.scene.section = SectionPlane(
+            self.section_axis.currentIndex(), float(position), self.section_flip.isChecked()
+        )
+
     def _report_collisions(self) -> None:
         if not self.scene.show_collisions:
             return
@@ -769,12 +853,14 @@ class MainWindow(QMainWindow):
             (self.action_isolate, self.scene.isolated),
             (self.action_xray, self.scene.xray),
             (self.action_explode, self.scene.exploded),
+            (self.action_section, self.scene.section is not None),
             (self.action_collisions, self.scene.show_collisions),
         ):
             action.blockSignals(True)
             action.setChecked(on)
             action.blockSignals(False)
         self.explode_box.setVisible(self.scene.exploded)
+        self.section_box.setVisible(self.scene.section is not None)
 
     def array_copy(self) -> ArrayDialog | None:
         """Ask for count and spacing, then copy the selection in a row."""
