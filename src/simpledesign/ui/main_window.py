@@ -239,6 +239,14 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _checked=False, n=name: self.viewport.show_view(n))
             self.view_actions[name] = action
 
+        self.action_rotate_mode = QAction(self.tr("&Drehen"), self)
+        self.action_rotate_mode.setCheckable(True)
+        self.action_rotate_mode.setShortcut(QKeySequence("R"))
+        self.action_rotate_mode.setToolTip(
+            self.tr("Drehringe statt Pfeilen: Teil frei im Raum drehen (R)")
+        )
+        self.action_rotate_mode.toggled.connect(lambda on: setattr(self.scene, "rotate_mode", on))
+
         self.action_fit = QAction(self.tr("Alles &zeigen"), self)
         self.action_fit.setShortcut(QKeySequence("F6"))
         self.action_fit.triggered.connect(self.viewport.fit_view)
@@ -298,6 +306,7 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addActions([tree.action_toggle_visible, tree.action_transparent])
         view_menu.addAction(self.action_snap)
+        view_menu.addAction(self.action_rotate_mode)
         view_menu.addSeparator()
         for dock in (
             self.library_dock,
@@ -337,6 +346,8 @@ class MainWindow(QMainWindow):
                 self.action_insert_template,
             ]
         )
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_rotate_mode)
         toolbar.addSeparator()
         toolbar.addActions(list(self.view_actions.values()))
 

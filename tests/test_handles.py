@@ -86,3 +86,38 @@ def test_resize_cannot_collapse(window: MainWindow) -> None:
     board_id = _board(window)
     _drag_along(window, (300, 300, 9), (0, -800, 0))
     assert window.controller.evaluation.boards[board_id].width == pytest.approx(1)
+
+
+def _drag_ring(window: MainWindow, axis: Axis, start_deg: float, end_deg: float) -> None:
+    scene = window.scene
+    sx, sy = _screen(window, scene.ring_point(axis, start_deg))
+    assert scene.ring_at(sx, sy) == axis
+    assert scene.press(sx, sy, False) is True
+    for step in range(1, 21):
+        deg = start_deg + (end_deg - start_deg) * step / 20
+        scene.move(*_screen(window, scene.ring_point(axis, deg)))
+    scene.release(*_screen(window, scene.ring_point(axis, end_deg)), False)
+
+
+def test_rotate_ring_turns_about_centre(window: MainWindow) -> None:
+    board_id = _board(window)
+    c = window.controller
+    before = c.evaluation.boards[board_id]
+    window.action_rotate_mode.trigger()
+    assert window.scene.rotate_mode
+    assert window.scene._handle_points == {}
+    assert window.scene.arrow_at(*_screen(window, (300, 150, 9))) is None
+    count = c.undo_stack.count()
+    # Z rotation: ring in the XY plane; a 90° turn on the ring (counter-clockwise
+    # seen from above) turns the board by +90°.
+    _drag_ring(window, Axis.Z, 10, 100)
+    after = c.evaluation.boards[board_id]
+    assert after.angle == pytest.approx(90)
+    assert c.undo_stack.count() == count + 1
+    lo, hi = window.scene.bounds({board_id}) or ((0, 0, 0), (0, 0, 0))
+    centre = [(lo[i] + hi[i]) / 2 for i in range(3)]
+    assert centre == pytest.approx([300, 150, 9], abs=0.5)
+    assert hi[0] - lo[0] == pytest.approx(300, abs=0.5)  # turned: width along X
+    # an already rotated board offers only its own axis
+    assert window.scene.ring_axes() == [Axis.Z]
+    assert before.angle == 0

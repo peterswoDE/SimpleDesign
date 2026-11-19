@@ -11,6 +11,8 @@
   side, in the vertical plane facing the camera).
 * Small cubes on the faces of a single selected board resize it: the face
   moves, the opposite face stays. The change is added to the size formula.
+* In rotate mode three rings replace the arrows; dragging a ring turns the
+  board about its centre (15° steps, Shift: 1°).
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import numpy as np
 import pyvista as pv
 from PySide6.QtCore import QObject, Signal
 from vtkmodules.vtkCommonCore import vtkCommand
+from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
     vtkCellPicker,
@@ -47,6 +50,10 @@ GIZMO_PICK_PX = 10  # distance from an arrow (on screen) that still grabs it
 HANDLE_PX = 11  # edge length of a resize handle on screen
 HANDLE_PICK_PX = 9
 HANDLE_MIN_SPREAD_PX = 14  # hide handles this close to the centre (thin side)
+RING_PX = 70  # radius of a rotate ring on screen
+RING_SAMPLES = 72
+ROTATE_STEP = 15.0  # degrees (Shift: 1°)
+RING_EDGE_ON = 0.25  # |view · axis| below this: ring seen edge-on, use screen angle
 SELECTION_COLOR = "#2f7de1"
 EDGE_COLOR = "#4b4136"
 TRANSPARENT_OPACITY = 0.3
@@ -77,6 +84,18 @@ def _edges(size: Size) -> pv.PolyData:
     return pv.PolyData(corners, lines=lines)
 
 
+def _circle(axis: Axis) -> pv.PolyData:
+    """Unit circle around ``axis`` through the origin (closed polyline)."""
+    i = axis.position
+    u, v = (i + 1) % 3, (i + 2) % 3
+    points = np.zeros((RING_SAMPLES, 3))
+    angles = np.linspace(0.0, 2 * math.pi, RING_SAMPLES, endpoint=False)
+    points[:, u] = np.cos(angles)
+    points[:, v] = np.sin(angles)
+    lines = np.array([RING_SAMPLES + 1, *range(RING_SAMPLES), 0], dtype=np.int64)
+    return pv.PolyData(points, lines=lines)
+
+
 def segment_distance(p: Point2, a: Point2, b: Point2) -> float:
     """Distance of point ``p`` to the segment ``a``-``b`` (2D)."""
     ab = (b[0] - a[0], b[1] - a[1])
@@ -101,10 +120,15 @@ class _Drag:
     axis: Axis | None = None
     t0: float = 0.0
     normal: int = 2  # plane drag: index of the plane normal's world axis
-    kind: str = "move"  # "move" or "resize"
+    kind: str = "move"  # "move", "resize" or "rotate"
     side: int = 0  # resize: +1 end face, -1 start face
     faces: list[float] = field(default_factory=list)  # resize: faces to snap to
     snapped: bool = False
+    # rotate: cursor angle last time, accumulated turn, 0 = measured in the
+    # ring plane, ±1 = on screen (sign towards the viewer)
+    last_angle: float = 0.0
+    turned: float = 0.0
+    sense: float = 1.0
 
 
 class Scene(QObject):
@@ -119,6 +143,7 @@ class Scene(QObject):
         self.renderer: vtkRenderer = viewport.renderer
         self.snapping_enabled = True
         self.snap_tolerance_px = SNAP_TOLERANCE_PX
+        self._rotate_mode = False
 
         self._board_actors: dict[str, list[tuple[vtkActor, vtkActor]]] = {}
         self._actor_board: dict[int, str] = {}  # id(actor) -> board id
@@ -200,6 +225,7 @@ class Scene(QObject):
                 for actor in (face, edge):
                     actor.SetOrientation(0.0, 0.0, 0.0)
                     actor.SetScale(1.0, 1.0, 1.0)
+                    actor.SetUserTransform(None)
                     actor.SetPosition(*origin)
                     actor.VisibilityOn()
                 prop = face.GetProperty()
@@ -321,7 +347,40 @@ class Scene(QObject):
                 self.overlay.AddActor(actor)
                 self._handles[axis, side] = actor
         self._hover_handle: tuple[Axis, int] | None = None
+
+        self._rings: dict[Axis, vtkActor] = {}
+        for axis in AXES:
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputData(_circle(axis))
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            prop = actor.GetProperty()
+            prop.SetColor(*_rgb(AXIS_COLORS[axis]))
+            prop.SetLineWidth(3.0)
+            prop.SetLighting(False)
+            actor.PickableOff()
+            actor.VisibilityOff()
+            self.overlay.AddActor(actor)
+            self._rings[axis] = actor
+        self._hover_ring: Axis | None = None
         self.renderer.AddObserver(vtkCommand.StartEvent, self._scale_gizmo)
+
+    @property
+    def rotate_mode(self) -> bool:
+        """Rings instead of arrows and handles: drag a ring to turn the board."""
+        return self._rotate_mode
+
+    @rotate_mode.setter
+    def rotate_mode(self, on: bool) -> None:
+        if on == self._rotate_mode:
+            return
+        self.cancel()
+        self._rotate_mode = on
+        self._place_gizmo()
+        self.viewport.render()
+        self.status_message.emit(
+            self.tr("Drehen: einen Ring ziehen (15°-Schritte, Umschalt: 1°)") if on else ""
+        )
 
     def gizmo_board(self) -> str | None:
         """The board the gizmo belongs to when exactly one board is selected."""
@@ -343,11 +402,12 @@ class Scene(QObject):
             self._gizmo_origin = ((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
         self._show_gizmo_at(self._gizmo_origin)
         self._place_handles()
+        self._place_rings()
 
     def _place_handles(self) -> None:
         """Resize handles on the face centres of a single, not rotated board."""
         self._handle_points = {}
-        board_id = self.gizmo_board()
+        board_id = None if self._rotate_mode else self.gizmo_board()
         doc, evaluation = self.controller.doc, self.controller.evaluation
         state = evaluation.boards.get(board_id) if board_id is not None else None
         if board_id is not None and state is not None and not state.rotated:
@@ -367,9 +427,28 @@ class Scene(QObject):
             if spot is not None:
                 actor.SetPosition(*spot)
 
+    def ring_axes(self) -> list[Axis]:
+        """The rings that can be dragged: all three, or only the axis an
+        already rotated board turns about."""
+        board_id = self.gizmo_board() if self._rotate_mode else None
+        if board_id is None or self._gizmo_origin is None:
+            return []
+        state = self.controller.evaluation.boards.get(board_id)
+        if state is None:
+            return []
+        board = self.controller.doc.boards[board_id]
+        return [board.rotation_axis] if state.rotated else list(AXES)
+
+    def _place_rings(self) -> None:
+        axes = self.ring_axes()
+        for axis, actor in self._rings.items():
+            actor.SetVisibility(axis in axes)
+            if axis in axes and self._gizmo_origin is not None:
+                actor.SetPosition(*self._gizmo_origin)
+
     def _show_gizmo_at(self, origin: Vec3 | None) -> None:
         for actor in self._arrows.values():
-            actor.SetVisibility(origin is not None)
+            actor.SetVisibility(origin is not None and not self._rotate_mode)
             if origin is not None:
                 actor.SetPosition(*origin)
 
@@ -390,6 +469,9 @@ class Scene(QObject):
             if actor.GetVisibility():
                 size = HANDLE_PX * self.world_per_pixel(actor.GetPosition())
                 actor.SetScale(size, size, size)
+        radius = RING_PX * self.world_per_pixel(origin)
+        for actor in self._rings.values():
+            actor.SetScale(radius, radius, radius)
 
     def _current_gizmo_origin(self) -> Vec3 | None:
         o = self._gizmo_origin
@@ -407,7 +489,7 @@ class Scene(QObject):
     def arrow_at(self, x: int, y: int) -> Axis | None:
         """The gizmo arrow within ``GIZMO_PICK_PX`` of the cursor (screen space)."""
         origin = self._gizmo_origin
-        if origin is None:
+        if origin is None or self._rotate_mode:
             return None
         scale = self._gizmo_scale(origin)
         start = self.to_display(origin)
@@ -442,6 +524,48 @@ class Scene(QObject):
             if distance <= HANDLE_PICK_PX and (best is None or distance < best[0]):
                 best = (distance, key)
         return best[1] if best else None
+
+    def ring_at(self, x: int, y: int) -> Axis | None:
+        """The rotate ring within ``GIZMO_PICK_PX`` of the cursor (screen space)."""
+        origin = self._gizmo_origin
+        if origin is None:
+            return None
+        radius = RING_PX * self.world_per_pixel(origin)
+        best: tuple[float, Axis] | None = None
+        for axis in self.ring_axes():
+            i = axis.position
+            u, v = (i + 1) % 3, (i + 2) % 3
+            screen = []
+            for k in range(RING_SAMPLES):
+                angle = 2 * math.pi * k / RING_SAMPLES
+                point = list(origin)
+                point[u] += radius * math.cos(angle)
+                point[v] += radius * math.sin(angle)
+                screen.append(self.to_display((point[0], point[1], point[2])))
+            distance = min(
+                segment_distance((x, y), screen[k], screen[(k + 1) % RING_SAMPLES])
+                for k in range(RING_SAMPLES)
+            )
+            if distance <= GIZMO_PICK_PX and (best is None or distance < best[0]):
+                best = (distance, axis)
+        return best[1] if best else None
+
+    def ring_point(self, axis: Axis, degrees: float) -> Vec3:
+        """A point on a ring (for tests and hit checks)."""
+        assert self._gizmo_origin is not None
+        origin = self._gizmo_origin
+        radius = RING_PX * self.world_per_pixel(origin)
+        i = axis.position
+        u, v = (i + 1) % 3, (i + 2) % 3
+        point = list(origin)
+        point[u] += radius * math.cos(math.radians(degrees))
+        point[v] += radius * math.sin(math.radians(degrees))
+        return point[0], point[1], point[2]
+
+    def _color_rings(self, active: Axis | None) -> None:
+        for axis, actor in self._rings.items():
+            color = HIGHLIGHT_COLOR if axis == active else AXIS_COLORS[axis]
+            actor.GetProperty().SetColor(*_rgb(color))
 
     def _color_arrows(self, active: Axis | None) -> None:
         for axis, actor in self._arrows.items():
@@ -488,8 +612,14 @@ class Scene(QObject):
     def press(self, x: int, y: int, ctrl: bool) -> bool:
         self._press = (x, y)
         self._press_board = self._press_point = None
-        handle = self.handle_at(x, y)
+        ring = self.ring_at(x, y)
         board_id = self.gizmo_board()
+        if ring is not None and board_id is not None:
+            self._drag = self._rotate_drag(board_id, ring, x, y)
+            self._color_rings(ring)
+            self.viewport.render()
+            return True
+        handle = self.handle_at(x, y)
         if handle is not None and board_id is not None:
             self._drag = self._resize_drag(board_id, handle, x, y)
             self._color_handles(handle)
@@ -525,6 +655,75 @@ class Scene(QObject):
             faces.update((box.lo[i], box.hi[i]))
         drag.faces = sorted(faces)
         return drag
+
+    def _ring_angle(self, drag: _Drag, x: float, y: float) -> float:
+        """Angle of the cursor about the ring centre, in degrees about the axis.
+
+        Measured in the ring plane (exact in perspective); when looking at the
+        ring edge-on, the angle on screen is used instead (``drag.sense``)."""
+        assert drag.axis is not None
+        centre = drag.anchor
+        if drag.sense == 0.0:
+            i = drag.axis.position
+            hit = self.plane_point(centre, i, x, y)
+            if hit is not None:
+                u, v = (i + 1) % 3, (i + 2) % 3
+                return math.degrees(math.atan2(hit[v] - centre[v], hit[u] - centre[u]))
+        cx, cy = self.to_display(centre)
+        return (drag.sense or 1.0) * math.degrees(math.atan2(y - cy, x - cx))
+
+    def _rotate_drag(self, board_id: str, axis: Axis, x: int, y: int) -> _Drag:
+        assert self._gizmo_origin is not None
+        drag = _Drag(ids=[board_id], boards={board_id}, single=board_id, anchor=self._gizmo_origin)
+        drag.kind, drag.axis = "rotate", axis
+        view = self.renderer.GetActiveCamera().GetDirectionOfProjection()
+        if abs(view[axis.position]) >= RING_EDGE_ON:
+            drag.sense = 0.0  # angle in the ring plane
+        else:
+            # Counter-clockwise on screen is a positive turn when the axis
+            # points towards the viewer (display y points up).
+            drag.sense = 1.0 if view[axis.position] < 0 else -1.0
+        drag.last_angle = self._ring_angle(drag, x, y)
+        return drag
+
+    def _move_rotate(self, drag: _Drag, x: int, y: int, shift: bool) -> None:
+        angle = self._ring_angle(drag, x, y)
+        step = (angle - drag.last_angle + 180.0) % 360.0 - 180.0
+        drag.last_angle = angle
+        drag.turned += step
+        unit = 1.0 if shift else ROTATE_STEP
+        self._set_rotate(drag, round(drag.turned / unit) * unit)
+
+    def _set_rotate(self, drag: _Drag, degrees: float) -> None:
+        assert drag.axis is not None and drag.single is not None
+        drag.delta = [0.0, 0.0, 0.0]
+        drag.delta[drag.axis.position] = degrees
+        state = self.controller.evaluation.boards[drag.single]
+        total = (state.angle if state.rotated else 0.0) + degrees
+        self.status_message.emit(
+            self.tr(
+                "Drehen um {0}: {1:+g}° (gesamt {2:g}°)   (Umschalt: 1°, Esc: abbrechen)"
+            ).format(drag.axis.value.upper(), round(degrees, 3), round(total % 360.0, 3))
+        )
+        self._preview_rotate(drag)
+
+    def _preview_rotate(self, drag: _Drag) -> None:
+        assert drag.axis is not None and drag.single is not None
+        degrees = drag.delta[drag.axis.position]
+        parts = self.controller.evaluation.machining.parts
+        for (face, edge), shape in zip(
+            self._board_actors.get(drag.single, []), parts.get(drag.single, []), strict=False
+        ):
+            lo, hi = world_bounds(shape.origin, shape.size, shape.rotation)
+            centre = [(lo[i] + hi[i]) / 2 for i in range(3)]
+            turn = vtkTransform()
+            turn.PostMultiply()
+            turn.Translate(-centre[0], -centre[1], -centre[2])
+            turn.RotateWXYZ(degrees, *UNIT[drag.axis])
+            turn.Translate(*centre)
+            face.SetUserTransform(turn)
+            edge.SetUserTransform(turn)
+        self.viewport.render()
 
     def _new_drag(self, ids: list[str], anchor: Vec3) -> _Drag:
         doc = self.controller.doc
@@ -564,6 +763,9 @@ class Scene(QObject):
         shift = bool(self.viewport.iren.interactor.GetShiftKey())
         if drag.kind == "resize":
             self._move_resize(drag, x, y, shift)
+            return True
+        if drag.kind == "rotate":
+            self._move_rotate(drag, x, y, shift)
             return True
         evaluation = self.controller.evaluation
         raw = [0.0, 0.0, 0.0]
@@ -687,6 +889,7 @@ class Scene(QObject):
         if drag is not None:
             self._color_arrows(None)
             self._color_handles(None)
+            self._color_rings(None)
             self.status_message.emit("")
             self._commit(drag)
             return
@@ -704,6 +907,18 @@ class Scene(QObject):
             self.controller.set_selection([board_id] if board_id else [])
 
     def hover(self, x: int, y: int) -> None:
+        if self._rotate_mode:
+            ring = self.ring_at(x, y)
+            if ring != self._hover_ring:
+                self._hover_ring = ring
+                self._color_rings(ring)
+                self.viewport.render()
+                self.status_message.emit(
+                    self.tr("Ziehen: um {0} drehen").format(ring.value.upper())
+                    if ring is not None
+                    else self.tr("Drehen: einen Ring ziehen (15°-Schritte, Umschalt: 1°)")
+                )
+            return
         handle = self.handle_at(x, y)
         if handle != self._hover_handle:
             self._hover_handle = handle
@@ -737,6 +952,7 @@ class Scene(QObject):
         if drag is not None:
             self._color_arrows(None)
             self._color_handles(None)
+            self._color_rings(None)
             self.status_message.emit(self.tr("Abgebrochen"))
             self.rebuild()
 
@@ -757,6 +973,11 @@ class Scene(QObject):
             assert drag.axis is not None and drag.single is not None
             delta = drag.delta[drag.axis.position]
             self.controller.resize_board(drag.single, drag.axis, drag.side, delta)
+        elif drag.kind == "rotate":
+            assert drag.axis is not None and drag.single is not None
+            degrees = drag.delta[drag.axis.position]
+            if not self.controller.rotate_board(drag.single, drag.axis, degrees):
+                self.status_message.emit(self.tr("Drehen nicht möglich"))
         elif drag.single is not None:
             moves: dict[Axis, tuple[str, float]] = {}
             start = self.controller.evaluation.boards[drag.single].origin
