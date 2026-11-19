@@ -49,7 +49,13 @@ from simpledesign.ui.settings_dialog import (
 from simpledesign.ui.shortcut_labels import show_shortcut
 from simpledesign.ui.sketch_editor import NewPartEditor, new_sketch_part
 from simpledesign.ui.templates_dialog import InsertTemplateDialog
-from simpledesign.ui.tools import InsertTool, MeasureTool, Tool
+from simpledesign.ui.tools import (
+    FaceMeasureTool,
+    InsertTool,
+    MeasureTool,
+    SetDistanceTool,
+    Tool,
+)
 from simpledesign.ui.tree_panel import TreePanel
 from simpledesign.ui.viewport import Viewport
 
@@ -277,8 +283,23 @@ class MainWindow(QMainWindow):
         self.action_measure = self._tool_action(
             self.tr("&Messen"),
             "M",
-            self.tr("Abstand zwischen zwei Punkten messen"),
+            self.tr("Abstand zwischen zwei parallelen Flächen messen"),
+            lambda: FaceMeasureTool(self.scene),
+        )
+        self.action_measure_points = self._tool_action(
+            self.tr("&Punkte messen"),
+            "Shift+M",
+            self.tr("Abstand zwischen zwei Punkten (Ecken, Kantenmitten) messen"),
             lambda: MeasureTool(self.scene),
+        )
+        self.action_set_distance = self._tool_action(
+            self.tr("&Abstand setzen"),
+            "E",
+            self.tr(
+                "Bezugsfläche klicken, dann die parallele Fläche des Teils, das "
+                "verschoben wird, und den neuen Abstand tippen (einmalig, ohne Verknüpfung)"
+            ),
+            lambda: SetDistanceTool(self.scene),
         )
         self.scene.tool_changed.connect(self._sync_tool_actions)
         self.action_seat_groove = QAction(self.tr("In &Nut setzen…"), self)
@@ -351,6 +372,7 @@ class MainWindow(QMainWindow):
         )
         edit_menu.addAction(self.action_array)
         edit_menu.addAction(self.action_split)
+        edit_menu.addAction(self.action_set_distance)
 
         insert_menu = menu_bar.addMenu(self.tr("&Einfügen"))
         insert_menu.addActions(
@@ -383,7 +405,7 @@ class MainWindow(QMainWindow):
         view_menu.addActions([tree.action_toggle_visible, tree.action_transparent])
         view_menu.addAction(self.action_snap)
         view_menu.addAction(self.action_rotate_mode)
-        view_menu.addAction(self.action_measure)
+        view_menu.addActions([self.action_measure, self.action_measure_points])
         view_menu.addSeparator()
         view_menu.addActions([self.action_isolate, self.action_xray])
         view_menu.addSeparator()
@@ -434,7 +456,11 @@ class MainWindow(QMainWindow):
                     self.action_split,
                 ],
             ),
-            ("tools", self.tr("Werkzeuge"), [self.action_rotate_mode, self.action_measure]),
+            (
+                "tools",
+                self.tr("Werkzeuge"),
+                [self.action_rotate_mode, self.action_measure, self.action_set_distance],
+            ),
             (
                 "view",
                 self.tr("Ansicht"),

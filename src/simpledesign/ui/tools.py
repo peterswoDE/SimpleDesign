@@ -1,4 +1,5 @@
-"""Click tools of the 3D view: fit a new board into a compartment, measure.
+"""Click tools of the 3D view: fit a new board into a compartment, measure
+points or faces, set the distance between two faces.
 
 A tool takes over the pointer events of the view while it is active (the
 scene hands them back when the tool ends: Esc, right click).
@@ -7,6 +8,7 @@ scene hands them back when the tool ends: Esc, right click).
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pyvista as pv
@@ -350,3 +352,292 @@ def _snap_candidates(lo: Vec3, hi: Vec3) -> list[Vec3]:
                 if middles <= 1:  # corner (0) or edge middle (1)
                     points.append((values[0][ix], values[1][iy], values[2][iz]))
     return points
+
+
+# ====================================================================== faces
+FACE_COLOR = (1.0, 0.55, 0.0)
+FACE_TOLERANCE = 1.0  # mm: hit point to box face
+
+
+@dataclass(frozen=True, slots=True)
+class PickedFace:
+    """A flat face under the cursor, normal along a world axis."""
+
+    board_id: str
+    axis: int
+    sign: int  # direction of the outward normal
+    value: float  # position of the face plane along ``axis``
+    point: Vec3
+    rect: tuple[Vec3, Vec3] | None  # face corners (None: not a box face)
+
+
+def pick_face(scene: Scene, x: int, y: int) -> PickedFace | None:
+    """The face under the cursor, snapped to the exact face of the part's box."""
+    hit = scene.pick_face(x, y)
+    if hit is None:
+        return None
+    board_id, point, axis, sign = hit
+    controller = scene.controller
+    for box in fit.boxes(controller.doc, controller.evaluation):
+        if box.board_id != board_id:
+            continue
+        plane = box.hi[axis] if sign > 0 else box.lo[axis]
+        if abs(plane - point[axis]) > FACE_TOLERANCE:
+            continue
+        if any(
+            not box.lo[k] - FACE_TOLERANCE <= point[k] <= box.hi[k] + FACE_TOLERANCE
+            for k in range(3)
+            if k != axis
+        ):
+            continue
+        lo, hi = list(box.lo), list(box.hi)
+        lo[axis] = hi[axis] = plane
+        return PickedFace(
+            board_id, axis, sign, plane, point, ((lo[0], lo[1], lo[2]), (hi[0], hi[1], hi[2]))
+        )
+    return PickedFace(board_id, axis, sign, point[axis], point, None)
+
+
+def distance_shift(reference: PickedFace, target: PickedFace, distance: float) -> float:
+    """How far the target's part moves along the axis so that its face is
+    ``distance`` from the reference face (on the side where it is now; faces
+    that touch move apart in the direction the target face looks away from)."""
+    gap = target.value - reference.value
+    touching = abs(gap) <= 1e-6
+    direction = -float(target.sign) if touching else (1.0 if gap > 0 else -1.0)
+    return reference.value + direction * distance - target.value
+
+
+def _face_actor() -> vtkActor:
+    actor = _box_actor()
+    prop = actor.GetProperty()
+    prop.SetColor(*FACE_COLOR)
+    prop.SetOpacity(0.4)
+    prop.SetLighting(False)
+    return actor
+
+
+class FaceMeasureTool(Tool):
+    """Click two parallel faces - their distance shows in the status bar and
+    as a line square to the first face."""
+
+    def __init__(self, scene: Scene) -> None:
+        super().__init__(scene)
+        self.first: PickedFace | None = None
+        self.result: float | None = None
+        self.hover_face = _face_actor()
+        self.first_face = _face_actor()
+        self.line = vtkActor()
+        self.line.SetMapper(vtkPolyDataMapper())
+        prop = self.line.GetProperty()
+        prop.SetColor(*FACE_COLOR)
+        prop.SetLineWidth(3.0)
+        prop.SetLighting(False)
+        self.line.PickableOff()
+        self.line.VisibilityOff()
+
+    # ------------------------------------------------------------------ texts
+    def start_hint(self) -> str:
+        return _tr("Flächen messen: erste Fläche klicken   (Esc: beenden)")
+
+    def second_hint(self) -> str:
+        return _tr("Zweite, parallele Fläche klicken   (Esc: neu beginnen)")
+
+    # ------------------------------------------------------------------ actors
+    def start(self) -> None:
+        for actor in (self.hover_face, self.first_face, self.line):
+            self.scene.overlay.AddActor(actor)
+        self.scene.status_message.emit(self.start_hint())
+
+    def finish(self) -> None:
+        for actor in (self.hover_face, self.first_face, self.line):
+            self.scene.overlay.RemoveActor(actor)
+        self.scene.viewport.render()
+
+    def _show_face(self, actor: vtkActor, face: PickedFace | None) -> None:
+        if face is None or face.rect is None:
+            actor.VisibilityOff()
+            return
+        lo, hi = face.rect
+        pos = list(lo)
+        pos[face.axis] += 0.2 * face.sign  # a hair in front of the face
+        actor.SetPosition(*pos)
+        actor.SetScale(*(max(hi[k] - lo[k], 0.01) for k in range(3)))
+        actor.VisibilityOn()
+
+    def _line_between(self, reference: PickedFace, face: PickedFace) -> None:
+        start = list(face.point)
+        start[face.axis] = face.value
+        end = list(start)
+        end[reference.axis] = reference.value
+        mapper = self.line.GetMapper()
+        assert isinstance(mapper, vtkPolyDataMapper)
+        mapper.SetInputData(pv.Line(start, end))
+        self.line.VisibilityOn()
+
+    def reset(self) -> None:
+        self.first = None
+        self.first_face.VisibilityOff()
+        self.line.VisibilityOff()
+        self.scene.status_message.emit(self.start_hint())
+        self.scene.viewport.render()
+
+    # ------------------------------------------------------------------ events
+    def hover(self, x: int, y: int) -> None:
+        face = pick_face(self.scene, x, y)
+        self._show_face(self.hover_face, face)
+        first = self.first
+        if first is not None and face is not None:
+            if face.axis == first.axis:
+                self._line_between(first, face)
+                self.report(abs(face.value - first.value), final=False)
+            else:
+                self.line.VisibilityOff()
+                self.scene.status_message.emit(_tr("Diese Fläche ist nicht parallel zur ersten"))
+        self.scene.viewport.render()
+
+    def press(self, x: int, y: int, ctrl: bool) -> bool:
+        face = pick_face(self.scene, x, y)
+        if face is None:
+            return False  # empty space: orbit
+        first = self.first
+        if first is None:
+            self.first = face
+            self.result = None
+            self._show_face(self.first_face, face)
+            self.line.VisibilityOff()
+            self.scene.status_message.emit(self.second_hint())
+        elif face.axis != first.axis:
+            self.scene.status_message.emit(
+                _tr("Diese Fläche ist nicht parallel zur ersten – bitte eine parallele wählen")
+            )
+        else:
+            self._line_between(first, face)
+            self.complete(first, face)
+        self.scene.viewport.render()
+        return True
+
+    def complete(self, first: PickedFace, second: PickedFace) -> None:
+        self.result = abs(second.value - first.value)
+        self.report(self.result, final=True)
+        self.first = None
+        self.first_face.VisibilityOff()
+
+    def report(self, distance: float, final: bool) -> None:
+        text = _tr("Abstand der Flächen {0} mm").format(number(distance))
+        if final:
+            text += _tr("   — nächste Fläche: neue Messung, Esc: beenden")
+        self.scene.status_message.emit(text)
+
+    def cancel(self) -> None:
+        if self.first is not None:
+            self.reset()
+        else:
+            self.scene.end_tool()
+
+
+class SetDistanceTool(FaceMeasureTool):
+    """Click a reference face, then a parallel face of another part, type the
+    new distance: that part moves (once - nothing is linked)."""
+
+    def __init__(self, scene: Scene) -> None:
+        super().__init__(scene)
+        self.target: tuple[PickedFace, PickedFace] | None = None
+        self.typed = ""
+
+    def start_hint(self) -> str:
+        return _tr("Abstand setzen: Bezugsfläche klicken (bleibt stehen)   (Esc: beenden)")
+
+    def second_hint(self) -> str:
+        return _tr("Parallele Fläche des Teils klicken, das verschoben wird   (Esc: neu beginnen)")
+
+    def reset(self) -> None:
+        self.target = None
+        self.typed = ""
+        super().reset()
+
+    def hover(self, x: int, y: int) -> None:
+        if self.target is None:
+            super().hover(x, y)
+        else:  # waiting for the number: only show the face under the cursor
+            self._show_face(self.hover_face, pick_face(self.scene, x, y))
+            self.scene.viewport.render()
+
+    def press(self, x: int, y: int, ctrl: bool) -> bool:
+        if self.target is not None:  # a click instead of a number: start over
+            self.target = None
+            self.typed = ""
+            self.first = None
+            self.first_face.VisibilityOff()
+        return super().press(x, y, ctrl)
+
+    def complete(self, first: PickedFace, second: PickedFace) -> None:
+        if second.board_id == first.board_id:
+            self.scene.status_message.emit(
+                _tr("Bitte eine Fläche eines anderen Teils wählen (das verschoben wird)")
+            )
+            return
+        self.target = (first, second)
+        self.typed = ""
+        self._prompt()
+
+    def _prompt(self) -> None:
+        assert self.target is not None
+        first, second = self.target
+        name = self.scene.controller.doc.boards[second.board_id].name
+        self.scene.status_message.emit(
+            _tr(
+                "Abstand jetzt {0} mm – neuen Abstand tippen: {1}_   "
+                "(Enter: „{2}“ verschieben, Esc: abbrechen)"
+            ).format(number(abs(second.value - first.value)), self.typed, name)
+        )
+
+    def type_key(self, key: int, text: str) -> bool:
+        if self.target is None:
+            return False
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.apply()
+            return True
+        if key == Qt.Key.Key_Backspace:
+            self.typed = self.typed[:-1]
+        elif text and text in "0123456789.,":
+            self.typed += "." if text == "," else text
+        else:
+            return False
+        self._prompt()
+        return True
+
+    def apply(self) -> bool:
+        """Move the part to the typed distance; False if nothing valid was typed."""
+        if self.target is None:
+            return False
+        try:
+            distance = float(self.typed)
+        except ValueError:
+            self.scene.status_message.emit(_tr("Bitte zuerst den neuen Abstand tippen"))
+            return False
+        first, second = self.target
+        shift = distance_shift(first, second, distance)
+        delta = [0.0, 0.0, 0.0]
+        delta[first.axis] = shift
+        controller = self.scene.controller
+        name = controller.doc.boards[second.board_id].name
+        controller.translate([second.board_id], (delta[0], delta[1], delta[2]))
+        self.target = None
+        self.typed = ""
+        self.first = None
+        self.first_face.VisibilityOff()
+        self.line.VisibilityOff()
+        self.scene.status_message.emit(
+            _tr("„{0}“ um {1} mm verschoben – Abstand jetzt {2} mm").format(
+                name, number(shift), number(distance)
+            )
+        )
+        self.scene.viewport.render()
+        return True
+
+    def cancel(self) -> None:
+        if self.target is not None:
+            self.reset()
+        else:
+            super().cancel()

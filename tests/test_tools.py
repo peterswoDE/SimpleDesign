@@ -11,7 +11,14 @@ from pytestqt.qtbot import QtBot
 from simpledesign.core.model import fit
 from simpledesign.core.model.joint import JointKind
 from simpledesign.ui.main_window import MainWindow
-from simpledesign.ui.tools import InsertTool, MeasureTool
+from simpledesign.ui.tools import (
+    FaceMeasureTool,
+    InsertTool,
+    MeasureTool,
+    PickedFace,
+    SetDistanceTool,
+    distance_shift,
+)
 
 from .furniture import board_id, build_korpus
 
@@ -85,7 +92,7 @@ def test_tool_ends_with_escape_and_unchecks(window: MainWindow) -> None:
     # switching tools replaces the active one
     window.action_insert_divider.trigger()
     window.action_measure.trigger()
-    assert isinstance(window.scene.tool, MeasureTool)
+    assert isinstance(window.scene.tool, FaceMeasureTool)
     assert not window.action_insert_divider.isChecked()
     window.action_measure.trigger()  # unchecking ends it
     assert window.scene.tool is None
@@ -115,7 +122,7 @@ def test_seat_back_in_groove_from_menu(window: MainWindow) -> None:
 
 
 def test_measure_snaps_to_corners(window: MainWindow) -> None:
-    window.action_measure.trigger()
+    window.action_measure_points.trigger()
     tool = window.scene.tool
     assert isinstance(tool, MeasureTool)
     # inner bottom corners of the compartment (front of the back panel)
@@ -135,3 +142,62 @@ def test_groove_settings_from_preferences(window: MainWindow) -> None:
     prefs.groove_distance = 15
     window.apply_preferences(prefs)
     assert window.controller.groove == fit.GrooveSettings(prefs.groove_depth, prefs.groove_play, 15)
+
+
+def test_measure_distance_between_faces(window: MainWindow) -> None:
+    window.action_measure.trigger()
+    tool = window.scene.tool
+    assert isinstance(tool, FaceMeasureTool)
+    side = _screen(window, (9, 0, 900))  # front face of the left side
+    back = _screen(window, (400, 400, 900))  # front face of the back panel
+    assert tool.press(*side, False)
+    assert tool.first is not None and tool.first.value == pytest.approx(0)
+    assert tool.first_face.GetVisibility()
+    tool.hover(*back)
+    assert "400" in window.statusBar().currentMessage()
+    assert tool.press(*back, False)
+    assert tool.result == pytest.approx(400)
+    assert tool.first is None
+    # Esc after a first face starts over, a second Esc ends the tool
+    tool.press(*side, False)
+    tool.cancel()
+    assert window.scene.tool is tool and tool.first is None
+    tool.cancel()
+    assert window.scene.tool is None
+
+
+def test_set_distance_moves_the_second_part(window: MainWindow) -> None:
+    c = window.controller
+    bottom = board_id(c.doc, "Boden")
+    window.action_set_distance.trigger()
+    tool = window.scene.tool
+    assert isinstance(tool, SetDistanceTool)
+    assert tool.press(*_screen(window, (400, 400, 900)), False)  # back panel: stays
+    assert tool.press(*_screen(window, (400, 0, 9)), False)  # bottom: moves
+    assert tool.target is not None
+    assert "400" in window.statusBar().currentMessage()
+    count = c.undo_stack.count()
+    for char in "380":
+        assert tool.type_key(0, char)
+    assert tool.type_key(Qt.Key.Key_Return, "\r")
+    assert c.undo_stack.count() == count + 1
+    assert c.evaluation.boards[bottom].y == pytest.approx(20)
+    assert tool.target is None
+    # the same part twice: nothing to move
+    tool.press(*_screen(window, (400, 0, 9)), False)
+    tool.press(*_screen(window, (300, 0, 9)), False)
+    assert tool.target is None
+
+
+def _face(value: float, sign: int) -> PickedFace:
+    return PickedFace("b", 2, sign, value, (0.0, 0.0, value), None)
+
+
+def test_distance_shift_keeps_the_side() -> None:
+    # shelf bottom 100 above the floor top -> 250
+    assert distance_shift(_face(18, 1), _face(118, -1), 250) == pytest.approx(150)
+    # below the reference it stays below
+    assert distance_shift(_face(500, -1), _face(400, 1), 50) == pytest.approx(50)
+    # touching faces move apart where the target face looks away from
+    assert distance_shift(_face(18, 1), _face(18, -1), 30) == pytest.approx(30)
+    assert distance_shift(_face(18, -1), _face(18, 1), 30) == pytest.approx(-30)
