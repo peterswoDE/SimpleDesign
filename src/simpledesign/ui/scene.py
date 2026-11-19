@@ -137,6 +137,7 @@ class _Drag:
 class Scene(QObject):
     status_message = Signal(str)
     tool_changed = Signal()  # a click tool started or ended
+    view_mode_changed = Signal()  # isolation or X-ray switched
     # Right click at a viewport position (logical pixels from the top-left).
     context_menu_requested = Signal(int, int)
 
@@ -166,6 +167,10 @@ class Scene(QObject):
         self._hover_axis: Axis | None = None
         self._typed = ""  # value typed during a drag
         self.tool: Tool | None = None
+        # Isolation: only these boards (and boards made later) are shown.
+        self._isolated: set[str] | None = None
+        self._known: set[str] = set()
+        self._xray = False
 
         self._create_overlay()
         viewport.interaction_style.pointer_handler = self
@@ -204,6 +209,38 @@ class Scene(QObject):
             if b.id in selected or any(g in selected for g in doc.scope_chain(b.group_id))
         }
 
+    # ================================================================== view modes
+    @property
+    def isolated(self) -> bool:
+        return self._isolated is not None
+
+    def isolate(self, board_ids: set[str] | None) -> None:
+        """Show only ``board_ids`` (None: everything again)."""
+        if board_ids is not None and not board_ids:
+            board_ids = None
+        self._isolated = board_ids
+        self._known = set(self.controller.doc.boards) if board_ids is not None else set()
+        self.rebuild()
+        self.view_mode_changed.emit()
+
+    def _hidden_by_isolation(self, board_id: str) -> bool:
+        return (
+            self._isolated is not None
+            and board_id not in self._isolated
+            and board_id in self._known
+        )
+
+    @property
+    def xray(self) -> bool:
+        return self._xray
+
+    @xray.setter
+    def xray(self, on: bool) -> None:
+        if on != self._xray:
+            self._xray = on
+            self.rebuild()
+            self.view_mode_changed.emit()
+
     def rebuild(self) -> None:
         self._board_actors = {}
         used = 0
@@ -215,8 +252,11 @@ class Scene(QObject):
         evaluation = self.controller.evaluation
         selected = self.selected_boards()
         self._selected_boards = selected
+        if self._isolated is not None and not self._isolated & doc.boards.keys():
+            self._isolated = None  # isolated parts gone (new file, deleted)
+            self.view_mode_changed.emit()
         for board in doc.boards.values():
-            if not doc.is_visible(board):
+            if not doc.is_visible(board) or self._hidden_by_isolation(board.id):
                 continue
             is_selected = board.id in selected
             color = SELECTION_COLOR if is_selected else doc.materials[board.material_id].color
@@ -236,7 +276,8 @@ class Scene(QObject):
                     actor.VisibilityOn()
                 prop = face.GetProperty()
                 prop.SetColor(*_rgb(color))
-                prop.SetOpacity(TRANSPARENT_OPACITY if board.transparent else 1.0)
+                see_through = board.transparent or (self._xray and not is_selected)
+                prop.SetOpacity(TRANSPARENT_OPACITY if see_through else 1.0)
                 if shape.rotation is not None:
                     axis, degrees = shape.rotation
                     for actor in (face, edge):

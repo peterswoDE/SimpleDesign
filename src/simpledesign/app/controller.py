@@ -443,6 +443,26 @@ class Controller(QObject):
         self.set_selection(copies)
         return copies
 
+    def array_copy(
+        self, ids: Iterable[str], count: int, step: tuple[float, float, float]
+    ) -> list[str]:
+        """``count`` copies in a row, each ``step`` further; one undo step."""
+        ids = list(ids)
+        if not ids or count < 1:
+            return []
+
+        def change(d: Document) -> list[str]:
+            copies: list[str] = []
+            for k in range(1, count + 1):
+                made = d.duplicate(ids)
+                d.translate(made, (step[0] * k, step[1] * k, step[2] * k))
+                copies += made
+            return copies
+
+        copies = self.execute(self.tr("Reihe kopieren"), change)
+        self.set_selection(copies)
+        return copies
+
     def delete(self, ids: Iterable[str]) -> None:
         """Delete; formulas elsewhere that use the deleted objects get fixed values."""
         ids = list(ids)

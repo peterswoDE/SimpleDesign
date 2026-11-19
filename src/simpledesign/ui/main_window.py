@@ -28,6 +28,7 @@ from simpledesign.core.model.arrange import AlignMode
 from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import format_number
 from simpledesign.core.templates.template import Template
+from simpledesign.ui.array_dialog import ArrayDialog
 from simpledesign.ui.cutlist_panel import CutlistPanel
 from simpledesign.ui.cutplan_panel import CutplanPanel
 from simpledesign.ui.drawing_dialog import DrawingDialog
@@ -284,6 +285,21 @@ class MainWindow(QMainWindow):
         )
         self.action_seat_groove.triggered.connect(self.seat_in_groove)
 
+        self.action_array = QAction(self.tr("&Reihe kopieren…"), self)
+        self.action_array.setToolTip(self.tr("Mehrere Kopien der Auswahl in einer Reihe"))
+        self.action_array.triggered.connect(self.array_copy)
+        self.action_isolate = QAction(self.tr("Auswahl &isolieren"), self)
+        self.action_isolate.setCheckable(True)
+        self.action_isolate.setShortcut(QKeySequence("I"))
+        self.action_isolate.setToolTip(self.tr("Nur die Auswahl zeigen (I: wieder alles)"))
+        self.action_isolate.toggled.connect(self._isolate)
+        self.action_xray = QAction(self.tr("&Röntgenansicht"), self)
+        self.action_xray.setCheckable(True)
+        self.action_xray.setShortcut(QKeySequence("Alt+X"))
+        self.action_xray.setToolTip(self.tr("Alle nicht ausgewählten Teile durchsichtig"))
+        self.action_xray.toggled.connect(lambda on: setattr(self.scene, "xray", on))
+        self.scene.view_mode_changed.connect(self._sync_view_modes)
+
         self.action_fit = QAction(self.tr("Alles &zeigen"), self)
         self.action_fit.setShortcut(QKeySequence("F6"))
         self.action_fit.triggered.connect(self.viewport.fit_view)
@@ -318,6 +334,7 @@ class MainWindow(QMainWindow):
         edit_menu.addActions(
             [tree.action_rename, tree.action_duplicate, tree.action_delete, tree.action_group]
         )
+        edit_menu.addAction(self.action_array)
 
         insert_menu = menu_bar.addMenu(self.tr("&Einfügen"))
         insert_menu.addActions(
@@ -350,6 +367,8 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_snap)
         view_menu.addAction(self.action_rotate_mode)
         view_menu.addAction(self.action_measure)
+        view_menu.addSeparator()
+        view_menu.addActions([self.action_isolate, self.action_xray])
         view_menu.addSeparator()
         for dock in (
             self.library_dock,
@@ -395,6 +414,7 @@ class MainWindow(QMainWindow):
         )
         toolbar.addSeparator()
         toolbar.addActions([self.action_rotate_mode, self.action_measure])
+        toolbar.addActions([self.action_isolate, self.action_xray])
         toolbar.addSeparator()
         toolbar.addActions(list(self.view_actions.values()))
 
@@ -481,6 +501,8 @@ class MainWindow(QMainWindow):
         tree = self.tree_panel
         if self.controller.selection:
             menu.addActions([tree.action_rename, tree.action_duplicate, tree.action_delete])
+            menu.addAction(self.action_array)
+            menu.addAction(self.action_isolate)
             menu.addSeparator()
             menu.addActions([tree.action_toggle_visible, tree.action_transparent])
             menu.addAction(tree.action_group)
@@ -525,6 +547,39 @@ class MainWindow(QMainWindow):
                 action.blockSignals(True)
                 action.setChecked(False)
                 action.blockSignals(False)
+
+    def _isolate(self, on: bool) -> None:
+        if on == self.scene.isolated:
+            return
+        boards = self.scene.selected_boards() if on else None
+        if on and not boards:
+            self.statusBar().showMessage(self.tr("Zum Isolieren erst Teile auswählen"), 5000)
+        self.scene.isolate(boards)
+
+    def _sync_view_modes(self) -> None:
+        for action, on in (
+            (self.action_isolate, self.scene.isolated),
+            (self.action_xray, self.scene.xray),
+        ):
+            action.blockSignals(True)
+            action.setChecked(on)
+            action.blockSignals(False)
+
+    def array_copy(self) -> ArrayDialog | None:
+        """Ask for count and spacing, then copy the selection in a row."""
+        ids = list(self.controller.selection)
+        box = self.scene.bounds(self.scene.selected_boards())
+        if not ids or box is None:
+            self.statusBar().showMessage(self.tr("Bitte zuerst Teile auswählen"), 5000)
+            return None
+        lo, hi = box
+        dialog = ArrayDialog((hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.accepted.connect(
+            lambda: self.controller.array_copy(ids, dialog.count_spin.value(), dialog.step())
+        )
+        dialog.open()
+        return dialog
 
     def _single_board(self) -> str | None:
         selection = self.controller.selection
