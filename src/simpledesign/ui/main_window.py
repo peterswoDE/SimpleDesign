@@ -148,6 +148,35 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(self.parameters_dock, self.cutlist_dock)
         self.tabifyDockWidget(self.cutlist_dock, self.cutplan_dock)
         self.parameters_dock.raise_()
+        # The cut list and cut plan need the space: no 3D view while one of
+        # them is the shown tab (docked, not floating).
+        self._list_docks_shown: set[QDockWidget] = set()
+        for dock in (self.cutlist_dock, self.cutplan_dock):
+            dock.visibilityChanged.connect(
+                lambda visible, d=dock: self._list_dock_visibility(d, visible)
+            )
+            dock.topLevelChanged.connect(lambda _floating: self._update_central())
+
+    def _list_dock_visibility(self, dock: QDockWidget, visible: bool) -> None:
+        if visible:
+            self._list_docks_shown.add(dock)
+        else:
+            self._list_docks_shown.discard(dock)
+        self._update_central()
+
+    def viewport_hidden_by_lists(self) -> bool:
+        return any(
+            not d.isFloating() and d.isVisible() and d in self._list_docks_shown
+            for d in (self.cutlist_dock, self.cutplan_dock)
+        )
+
+    def _update_central(self) -> None:
+        hide = self.viewport_hidden_by_lists()
+        if hide == self.viewport.isHidden():
+            return
+        self.viewport.setVisible(not hide)
+        if not hide:
+            self.viewport.render()
 
     def _add_dock(
         self, name: str, title: str, widget: QWidget, area: Qt.DockWidgetArea
