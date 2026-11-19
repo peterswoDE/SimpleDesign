@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 
 from PySide6.QtCore import QCoreApplication, QSettings, Qt
 from PySide6.QtGui import QAction, QKeySequence
@@ -35,6 +35,9 @@ class Preferences:
     board_length: float = 600.0
     board_width: float = 300.0
     board_thickness: float = 18.0
+    groove_depth: float = 8.0
+    groove_play: float = 0.5
+    groove_distance: float = 10.0
 
     @classmethod
     def load(cls) -> Preferences:
@@ -63,6 +66,7 @@ class SettingsDialog(QDialog):
     def __init__(self, prefs: Preferences, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(_tr("Einstellungen"))
+        self._prefs = prefs
 
         self.snap_check = QCheckBox(_tr("An Kanten einrasten"))
         self.snap_check.setChecked(prefs.snapping)
@@ -111,7 +115,8 @@ class SettingsDialog(QDialog):
 
     def preferences(self) -> Preferences:
         length, width, thickness = (spin.value() for spin in self.size_spins)
-        return Preferences(
+        return replace(
+            self._prefs,
             snapping=self.snap_check.isChecked(),
             snap_tolerance_px=self.snap_spin.value(),
             autosave_minutes=self.autosave_spin.value(),

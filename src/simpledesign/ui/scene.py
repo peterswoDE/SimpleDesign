@@ -43,6 +43,7 @@ from simpledesign.core.model.machining import PartShape
 from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import add_offset
 from simpledesign.ui.texts import number
+from simpledesign.ui.tools import Tool
 from simpledesign.ui.viewport import Viewport, world_per_pixel
 
 CLICK_TOLERANCE_PX = 3
@@ -135,6 +136,7 @@ class _Drag:
 
 class Scene(QObject):
     status_message = Signal(str)
+    tool_changed = Signal()  # a click tool started or ended
     # Right click at a viewport position (logical pixels from the top-left).
     context_menu_requested = Signal(int, int)
 
@@ -163,6 +165,7 @@ class Scene(QObject):
         self._drag: _Drag | None = None
         self._hover_axis: Axis | None = None
         self._typed = ""  # value typed during a drag
+        self.tool: Tool | None = None
 
         self._create_overlay()
         viewport.interaction_style.pointer_handler = self
@@ -281,6 +284,38 @@ class Scene(QObject):
             return None, None
         px, py, pz = self._picker.GetPickPosition()
         return board_id, (px, py, pz)
+
+    def pick_face(self, x: int, y: int) -> tuple[str, Vec3, int, int] | None:
+        """Board, hit point, normal axis and its sign of the face under the
+        cursor (only faces along a world axis)."""
+        board_id, point = self.pick(x, y)
+        if board_id is None or point is None:
+            return None
+        normal = self._picker.GetPickNormal()
+        axis = max(range(3), key=lambda i: abs(normal[i]))
+        if abs(normal[axis]) < 0.9:
+            return None
+        return board_id, point, axis, 1 if normal[axis] > 0 else -1
+
+    # ================================================================== tools
+    def start_tool(self, tool: Tool) -> None:
+        """Let ``tool`` take the pointer events until it ends (Esc, right click)."""
+        self.end_tool(notify=False)
+        self.cancel()
+        self.tool = tool
+        self.viewport.interaction_style.pointer_handler = tool
+        tool.start()
+        self.tool_changed.emit()
+
+    def end_tool(self, notify: bool = True) -> None:
+        tool, self.tool = self.tool, None
+        if tool is None:
+            return
+        tool.finish()
+        self.viewport.interaction_style.pointer_handler = self
+        if notify:
+            self.status_message.emit("")
+            self.tool_changed.emit()
 
     def bounds(self, board_ids: set[str]) -> tuple[Vec3, Vec3] | None:
         """World bounding box of the shown parts of ``board_ids``."""

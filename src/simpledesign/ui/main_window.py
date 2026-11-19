@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSettings, Qt
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
@@ -22,7 +23,7 @@ from simpledesign import __version__
 from simpledesign.app.controller import Controller
 from simpledesign.core.io import sdz
 from simpledesign.core.io.export import ExportError, export
-from simpledesign.core.model import arrange
+from simpledesign.core.model import arrange, fit
 from simpledesign.core.model.arrange import AlignMode
 from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import format_number
@@ -30,6 +31,7 @@ from simpledesign.core.templates.template import Template
 from simpledesign.ui.cutlist_panel import CutlistPanel
 from simpledesign.ui.cutplan_panel import CutplanPanel
 from simpledesign.ui.drawing_dialog import DrawingDialog
+from simpledesign.ui.groove_dialog import GrooveDialog
 from simpledesign.ui.joints_panel import JointsPanel
 from simpledesign.ui.library_panel import LibraryPanel
 from simpledesign.ui.materials_dialog import MaterialsDialog
@@ -44,6 +46,7 @@ from simpledesign.ui.settings_dialog import (
 )
 from simpledesign.ui.sketch_editor import NewPartEditor, new_sketch_part
 from simpledesign.ui.templates_dialog import InsertTemplateDialog
+from simpledesign.ui.tools import InsertTool, MeasureTool, Tool
 from simpledesign.ui.tree_panel import TreePanel
 from simpledesign.ui.viewport import Viewport
 
@@ -247,6 +250,40 @@ class MainWindow(QMainWindow):
         )
         self.action_rotate_mode.toggled.connect(lambda on: setattr(self.scene, "rotate_mode", on))
 
+        # Click tools (one at a time, Esc ends them)
+        self.tool_actions = QActionGroup(self)
+        self.tool_actions.setExclusionPolicy(QActionGroup.ExclusionPolicy.ExclusiveOptional)
+        self.action_insert_divider = self._tool_action(
+            self.tr("&Trennwand einpassen"),
+            "D",
+            self.tr("Senkrechte Trennwand in ein Fach klicken (D)"),
+            lambda: InsertTool(self.scene, fit.InsertKind.DIVIDER),
+        )
+        self.action_insert_shelf = self._tool_action(
+            self.tr("&Fachboden einpassen"),
+            "F",
+            self.tr("Fachboden in ein Fach klicken (F)"),
+            lambda: InsertTool(self.scene, fit.InsertKind.SHELF),
+        )
+        self.action_insert_back = self._tool_action(
+            self.tr("&Rückwand einpassen"),
+            "",
+            self.tr("Rückwand in Nut: hinten in den Korpus klicken"),
+            lambda: InsertTool(self.scene, fit.InsertKind.BACK),
+        )
+        self.action_measure = self._tool_action(
+            self.tr("&Messen"),
+            "M",
+            self.tr("Abstand zwischen zwei Punkten messen (M)"),
+            lambda: MeasureTool(self.scene),
+        )
+        self.scene.tool_changed.connect(self._sync_tool_actions)
+        self.action_seat_groove = QAction(self.tr("In &Nut setzen…"), self)
+        self.action_seat_groove.setToolTip(
+            self.tr("Platte zwischen die Teile ringsum einpassen und mit Nuten verbinden")
+        )
+        self.action_seat_groove.triggered.connect(self.seat_in_groove)
+
         self.action_fit = QAction(self.tr("Alles &zeigen"), self)
         self.action_fit.setShortcut(QKeySequence("F6"))
         self.action_fit.triggered.connect(self.viewport.fit_view)
@@ -293,6 +330,11 @@ class MainWindow(QMainWindow):
             ]
         )
         insert_menu.addAction(tree.action_save_template)
+        insert_menu.addSeparator()
+        insert_menu.addActions(
+            [self.action_insert_divider, self.action_insert_shelf, self.action_insert_back]
+        )
+        insert_menu.addAction(self.action_seat_groove)
 
         self.arrange_menu = menu_bar.addMenu(self.tr("An&ordnen"))
         self._fill_arrange_menu(self.arrange_menu)
@@ -307,6 +349,7 @@ class MainWindow(QMainWindow):
         view_menu.addActions([tree.action_toggle_visible, tree.action_transparent])
         view_menu.addAction(self.action_snap)
         view_menu.addAction(self.action_rotate_mode)
+        view_menu.addAction(self.action_measure)
         view_menu.addSeparator()
         for dock in (
             self.library_dock,
@@ -347,7 +390,11 @@ class MainWindow(QMainWindow):
             ]
         )
         toolbar.addSeparator()
-        toolbar.addAction(self.action_rotate_mode)
+        toolbar.addActions(
+            [self.action_insert_divider, self.action_insert_shelf, self.action_insert_back]
+        )
+        toolbar.addSeparator()
+        toolbar.addActions([self.action_rotate_mode, self.action_measure])
         toolbar.addSeparator()
         toolbar.addActions(list(self.view_actions.values()))
 
@@ -439,6 +486,8 @@ class MainWindow(QMainWindow):
             menu.addAction(tree.action_group)
             if len(self.controller.selection) >= 2:
                 self._fill_arrange_menu(menu.addMenu(self.tr("Anordnen")))
+            if self._single_board() is not None:
+                menu.addAction(self.action_seat_groove)
             menu.addSeparator()
         menu.addAction(self.action_add_board)
         menu.addAction(self.action_insert_template)
@@ -449,6 +498,64 @@ class MainWindow(QMainWindow):
         menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         menu.popup(self.viewport.mapToGlobal(QPoint(x, y)))
         return menu
+
+    def _tool_action(self, text: str, shortcut: str, tip: str, make: Callable[[], Tool]) -> QAction:
+        action = QAction(text, self)
+        action.setCheckable(True)
+        if shortcut:
+            action.setShortcut(QKeySequence(shortcut))
+        action.setToolTip(tip)
+        self.tool_actions.addAction(action)
+
+        def toggled(on: bool) -> None:
+            if on:
+                self.scene.start_tool(make())
+                self.viewport.setFocus()
+            elif self.scene.tool is not None and not any(
+                a.isChecked() for a in self.tool_actions.actions()
+            ):
+                self.scene.end_tool()
+
+        action.toggled.connect(toggled)
+        return action
+
+    def _sync_tool_actions(self) -> None:
+        if self.scene.tool is None:
+            for action in self.tool_actions.actions():
+                action.blockSignals(True)
+                action.setChecked(False)
+                action.blockSignals(False)
+
+    def _single_board(self) -> str | None:
+        selection = self.controller.selection
+        if len(selection) == 1 and selection[0] in self.controller.doc.boards:
+            return selection[0]
+        return None
+
+    def seat_in_groove(self) -> GrooveDialog | None:
+        """Ask for the groove and fit the selected panel into it."""
+        board_id = self._single_board()
+        if board_id is None:
+            self.statusBar().showMessage(self.tr("Bitte genau eine Platte auswählen"), 5000)
+            return None
+        dialog = GrooveDialog(self.controller.groove, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def accepted() -> None:
+            groove = dialog.settings()
+            prefs = self.preferences
+            prefs.groove_depth, prefs.groove_play = groove.depth, groove.play
+            prefs.groove_distance = groove.distance
+            prefs.save()
+            self.controller.groove = groove
+            if not self.controller.seat_in_groove(board_id, groove):
+                self.statusBar().showMessage(
+                    self.tr("Die Platte ist nicht ringsum von Teilen umgeben"), 5000
+                )
+
+        dialog.accepted.connect(accepted)
+        dialog.open()
+        return dialog
 
     def _set_snapping(self, enabled: bool) -> None:
         self.scene.snapping_enabled = enabled
@@ -715,6 +822,9 @@ class MainWindow(QMainWindow):
             f"{prefs.board_length:g}",
             f"{prefs.board_width:g}",
             f"{prefs.board_thickness:g}",
+        )
+        self.controller.groove = fit.GrooveSettings(
+            prefs.groove_depth, prefs.groove_play, prefs.groove_distance
         )
 
     def show_settings(self) -> SettingsDialog:

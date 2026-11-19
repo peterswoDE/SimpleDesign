@@ -22,7 +22,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from simpledesign.core.io import sdz
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
-from simpledesign.core.model import arrange, transform
+from simpledesign.core.model import arrange, fit, transform
 from simpledesign.core.model.document import Document, ref_key
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.joint import JointKind
@@ -128,6 +128,7 @@ class Controller(QObject):
         self.autosave_timer.start()
         # Size formulas of new boards (length, width, thickness); see preferences.
         self.new_board_size = ("600", "300", "18")
+        self.groove = fit.GrooveSettings()  # back panels in a groove
 
     # ================================================================== state
     @property
@@ -273,6 +274,35 @@ class Controller(QObject):
             d.cut_settings = settings
 
         self.execute(self.tr("Zuschnitt-Einstellungen ändern"), change, merge_key="cut_settings")
+
+    def insert_board(self, plan: fit.InsertPlan, material_id: str, thickness_formula: str) -> str:
+        """Add a board planned by the insert tool (linked to the parts around)."""
+        group_id = self._group_of(plan)
+        groove = self.groove
+
+        def change(d: Document) -> str:
+            return fit.create(d, plan, group_id, material_id, thickness_formula, groove)
+
+        board_id = self.execute(self.tr("{0} einpassen").format(fit.BASE_NAMES[plan.kind]), change)
+        self.set_selection([board_id])
+        return board_id
+
+    def _group_of(self, plan: fit.InsertPlan) -> str | None:
+        """The group of the parts the new board is joined to (if they share one)."""
+        groups = {self.doc.boards[main].group_id for _kind, main in plan.joints}
+        return groups.pop() if len(groups) == 1 else None
+
+    def seat_in_groove(self, panel_id: str, groove: fit.GrooveSettings) -> bool:
+        """Fit a panel into grooves of the parts around it; False if not surrounded."""
+        evaluation = self.evaluation
+        try:
+            self.execute(
+                self.tr("In Nut setzen"),
+                lambda d: fit.seat_in_groove(d, evaluation, panel_id, groove),
+            )
+        except ValueError:
+            return False
+        return True
 
     # ================================================================== library
     def set_library(self, library: MaterialLibrary) -> None:
