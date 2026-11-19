@@ -9,6 +9,8 @@
   to faces of other boards and gets a formula (``Seite.x2``) instead of a number.
 * Dragging a part itself moves it in the floor plane (or, looking from the
   side, in the vertical plane facing the camera).
+* Small cubes on the faces of a single selected board resize it: the face
+  moves, the opposite face stays. The change is added to the size formula.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from simpledesign.app.controller import Controller
 from simpledesign.app.snapping import SnapTarget, Vec3, axis_parameter, best_snap, snap_targets
 from simpledesign.core.geometry.mesh import part_mesh
 from simpledesign.core.geometry.placement import world_bounds
+from simpledesign.core.model import fit, transform
 from simpledesign.core.model.machining import PartShape
 from simpledesign.core.model.part import Axis
 from simpledesign.core.params.expression import add_offset
@@ -41,6 +44,9 @@ CLICK_TOLERANCE_PX = 3
 SNAP_TOLERANCE_PX = 8
 GIZMO_SIZE_PX = 90
 GIZMO_PICK_PX = 10  # distance from an arrow (on screen) that still grabs it
+HANDLE_PX = 11  # edge length of a resize handle on screen
+HANDLE_PICK_PX = 9
+HANDLE_MIN_SPREAD_PX = 14  # hide handles this close to the centre (thin side)
 SELECTION_COLOR = "#2f7de1"
 EDGE_COLOR = "#4b4136"
 TRANSPARENT_OPACITY = 0.3
@@ -95,6 +101,10 @@ class _Drag:
     axis: Axis | None = None
     t0: float = 0.0
     normal: int = 2  # plane drag: index of the plane normal's world axis
+    kind: str = "move"  # "move" or "resize"
+    side: int = 0  # resize: +1 end face, -1 start face
+    faces: list[float] = field(default_factory=list)  # resize: faces to snap to
+    snapped: bool = False
 
 
 class Scene(QObject):
@@ -189,6 +199,7 @@ class Scene(QObject):
                 edge.SetMapper(edge_mapper)
                 for actor in (face, edge):
                     actor.SetOrientation(0.0, 0.0, 0.0)
+                    actor.SetScale(1.0, 1.0, 1.0)
                     actor.SetPosition(*origin)
                     actor.VisibilityOn()
                 prop = face.GetProperty()
@@ -293,6 +304,23 @@ class Scene(QObject):
             self.overlay.AddActor(actor)
             self._arrows[axis] = actor
         self._gizmo_origin: Vec3 | None = None
+
+        cube = pv.Cube(center=(0.0, 0.0, 0.0), x_length=1.0, y_length=1.0, z_length=1.0)
+        self._handles: dict[tuple[Axis, int], vtkActor] = {}
+        self._handle_points: dict[tuple[Axis, int], Vec3] = {}
+        for axis in AXES:
+            for side in (-1, 1):
+                mapper = vtkPolyDataMapper()
+                mapper.SetInputData(cube)
+                actor = vtkActor()
+                actor.SetMapper(mapper)
+                actor.GetProperty().SetColor(*_rgb(AXIS_COLORS[axis]))
+                actor.GetProperty().SetAmbient(0.6)
+                actor.PickableOff()
+                actor.VisibilityOff()
+                self.overlay.AddActor(actor)
+                self._handles[axis, side] = actor
+        self._hover_handle: tuple[Axis, int] | None = None
         self.renderer.AddObserver(vtkCommand.StartEvent, self._scale_gizmo)
 
     def gizmo_board(self) -> str | None:
@@ -314,6 +342,30 @@ class Scene(QObject):
             lo, hi = box
             self._gizmo_origin = ((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
         self._show_gizmo_at(self._gizmo_origin)
+        self._place_handles()
+
+    def _place_handles(self) -> None:
+        """Resize handles on the face centres of a single, not rotated board."""
+        self._handle_points = {}
+        board_id = self.gizmo_board()
+        doc, evaluation = self.controller.doc, self.controller.evaluation
+        state = evaluation.boards.get(board_id) if board_id is not None else None
+        if board_id is not None and state is not None and not state.rotated:
+            lo, size = state.origin, state.size
+            centre = [lo[i] + size[i] / 2 for i in range(3)]
+            for axis in AXES:
+                if not transform.resizable(doc, evaluation, board_id, axis):
+                    continue
+                i = axis.position
+                for side in (-1, 1):
+                    point = list(centre)
+                    point[i] = lo[i] + (size[i] if side > 0 else 0.0)
+                    self._handle_points[axis, side] = (point[0], point[1], point[2])
+        for key, actor in self._handles.items():
+            spot = self._handle_points.get(key)
+            actor.SetVisibility(spot is not None)
+            if spot is not None:
+                actor.SetPosition(*spot)
 
     def _show_gizmo_at(self, origin: Vec3 | None) -> None:
         for actor in self._arrows.values():
@@ -334,10 +386,14 @@ class Scene(QObject):
         scale = self._gizmo_scale(origin)
         for actor in self._arrows.values():
             actor.SetScale(scale, scale, scale)
+        for actor in self._handles.values():
+            if actor.GetVisibility():
+                size = HANDLE_PX * self.world_per_pixel(actor.GetPosition())
+                actor.SetScale(size, size, size)
 
     def _current_gizmo_origin(self) -> Vec3 | None:
         o = self._gizmo_origin
-        if o is None or self._drag is None:
+        if o is None or self._drag is None or self._drag.kind != "move":
             return o
         d = self._drag.delta
         return (o[0] + d[0], o[1] + d[1], o[2] + d[2])
@@ -371,9 +427,30 @@ class Scene(QObject):
                 best = (distance, axis)
         return best[1] if best else None
 
+    def handle_at(self, x: int, y: int) -> tuple[Axis, int] | None:
+        """The resize handle (axis, side) under the cursor (screen space)."""
+        origin = self._gizmo_origin
+        if origin is None or not self._handle_points:
+            return None
+        centre = self.to_display(origin)
+        best: tuple[float, tuple[Axis, int]] | None = None
+        for key, point in self._handle_points.items():
+            px, py = self.to_display(point)
+            if math.hypot(px - centre[0], py - centre[1]) < HANDLE_MIN_SPREAD_PX:
+                continue  # looking at the thin side: too close to the centre
+            distance = math.hypot(x - px, y - py)
+            if distance <= HANDLE_PICK_PX and (best is None or distance < best[0]):
+                best = (distance, key)
+        return best[1] if best else None
+
     def _color_arrows(self, active: Axis | None) -> None:
         for axis, actor in self._arrows.items():
             color = HIGHLIGHT_COLOR if axis == active else AXIS_COLORS[axis]
+            actor.GetProperty().SetColor(*_rgb(color))
+
+    def _color_handles(self, active: tuple[Axis, int] | None) -> None:
+        for key, actor in self._handles.items():
+            color = HIGHLIGHT_COLOR if key == active else AXIS_COLORS[key[0]]
             actor.GetProperty().SetColor(*_rgb(color))
 
     def _ray(self, x: float, y: float) -> tuple[Vec3, Vec3]:
@@ -411,6 +488,13 @@ class Scene(QObject):
     def press(self, x: int, y: int, ctrl: bool) -> bool:
         self._press = (x, y)
         self._press_board = self._press_point = None
+        handle = self.handle_at(x, y)
+        board_id = self.gizmo_board()
+        if handle is not None and board_id is not None:
+            self._drag = self._resize_drag(board_id, handle, x, y)
+            self._color_handles(handle)
+            self.viewport.render()
+            return True
         axis = self.arrow_at(x, y)
         if axis is not None and self._gizmo_origin is not None:
             drag = self._new_drag(list(self.controller.selection), self._gizmo_origin)
@@ -427,6 +511,20 @@ class Scene(QObject):
         self._press_board = board_id
         self._press_point = point
         return True
+
+    def _resize_drag(self, board_id: str, handle: tuple[Axis, int], x: int, y: int) -> _Drag:
+        axis, side = handle
+        anchor = self._handle_points[handle]
+        drag = _Drag(ids=[board_id], boards={board_id}, single=board_id, anchor=anchor)
+        drag.kind, drag.axis, drag.side = "resize", axis, side
+        drag.t0 = self._axis_t(anchor, axis, x, y)
+        i = axis.position
+        doc, evaluation = self.controller.doc, self.controller.evaluation
+        faces = {0.0}
+        for box in fit.boxes(doc, evaluation, exclude=[board_id]):
+            faces.update((box.lo[i], box.hi[i]))
+        drag.faces = sorted(faces)
+        return drag
 
     def _new_drag(self, ids: list[str], anchor: Vec3) -> _Drag:
         doc = self.controller.doc
@@ -464,6 +562,9 @@ class Scene(QObject):
                 return False
 
         shift = bool(self.viewport.iren.interactor.GetShiftKey())
+        if drag.kind == "resize":
+            self._move_resize(drag, x, y, shift)
+            return True
         evaluation = self.controller.evaluation
         raw = [0.0, 0.0, 0.0]
         if drag.axis is not None:
@@ -495,6 +596,61 @@ class Scene(QObject):
         self._status(drag, axes)
         self._preview(drag)
         return True
+
+    def _move_resize(self, drag: _Drag, x: int, y: int, shift: bool) -> None:
+        assert drag.axis is not None and drag.single is not None
+        i = drag.axis.position
+        raw = self._axis_t(drag.anchor, drag.axis, x, y) - drag.t0
+        face = drag.anchor[i]
+        delta = float(round(raw))
+        drag.snapped = False
+        if self.snapping_enabled and not shift and drag.faces:
+            tolerance = self.snap_tolerance_px * self.world_per_pixel(drag.anchor)
+            target = min(drag.faces, key=lambda v: abs(v - face - raw))
+            if abs(target - face - raw) <= tolerance:
+                delta = target - face
+                drag.snapped = True
+        self._set_resize(drag, delta)
+
+    def _set_resize(self, drag: _Drag, delta: float) -> None:
+        assert drag.axis is not None and drag.single is not None
+        i = drag.axis.position
+        extent = self.controller.evaluation.boards[drag.single].extent(drag.axis)
+        if extent + drag.side * delta < transform.MIN_SIZE:
+            delta = drag.side * (transform.MIN_SIZE - extent)
+        drag.delta = [0.0, 0.0, 0.0]
+        drag.delta[i] = delta
+        size = extent + drag.side * delta
+        note = self.tr(" (eingerastet)") if drag.snapped else ""
+        self.status_message.emit(
+            self.tr(
+                "Größe {0}: {1} mm ({2:+g}){3}   (Umschalt: ohne Einrasten, Esc: abbrechen)"
+            ).format(drag.axis.value.upper(), number(size), round(delta, 3), note)
+        )
+        self._preview_resize(drag, extent)
+
+    def _preview_resize(self, drag: _Drag, extent: float) -> None:
+        assert drag.axis is not None and drag.single is not None
+        i = drag.axis.position
+        delta = drag.delta[i]
+        factor = (extent + drag.side * delta) / extent if extent > 1e-9 else 1.0
+        scale = [1.0, 1.0, 1.0]
+        scale[i] = factor
+        parts = self.controller.evaluation.machining.parts
+        for (face, edge), shape in zip(
+            self._board_actors.get(drag.single, []), parts.get(drag.single, []), strict=False
+        ):
+            origin = list(shape.origin)
+            if drag.side < 0:
+                origin[i] += delta
+            for actor in (face, edge):
+                actor.SetScale(*scale)
+                actor.SetPosition(*origin)
+        handle = self._handles[drag.axis, drag.side]
+        point = list(drag.anchor)
+        point[i] += delta
+        handle.SetPosition(*point)
+        self.viewport.render()
 
     def _status(self, drag: _Drag, axes: list[Axis]) -> None:
         parts = []
@@ -530,6 +686,7 @@ class Scene(QObject):
         drag, self._drag = self._drag, None
         if drag is not None:
             self._color_arrows(None)
+            self._color_handles(None)
             self.status_message.emit("")
             self._commit(drag)
             return
@@ -547,6 +704,19 @@ class Scene(QObject):
             self.controller.set_selection([board_id] if board_id else [])
 
     def hover(self, x: int, y: int) -> None:
+        handle = self.handle_at(x, y)
+        if handle != self._hover_handle:
+            self._hover_handle = handle
+            self._color_handles(handle)
+            self.viewport.render()
+            if handle is not None:
+                self.status_message.emit(
+                    self.tr("Ziehen: Größe entlang {0} ändern").format(handle[0].value.upper())
+                )
+            else:
+                self.status_message.emit("")
+        if handle is not None:
+            return
         axis = self.arrow_at(x, y)
         if axis == self._hover_axis:
             return
@@ -566,7 +736,8 @@ class Scene(QObject):
         self._press_board = self._press_point = None
         if drag is not None:
             self._color_arrows(None)
-            self.status_message.emit(self.tr("Verschieben abgebrochen"))
+            self._color_handles(None)
+            self.status_message.emit(self.tr("Abgebrochen"))
             self.rebuild()
 
     def context_menu(self, x: int, y: int) -> None:
@@ -582,7 +753,11 @@ class Scene(QObject):
             self.rebuild()  # undo the preview
             return
         undo_count = self.controller.undo_stack.count()
-        if drag.single is not None:
+        if drag.kind == "resize":
+            assert drag.axis is not None and drag.single is not None
+            delta = drag.delta[drag.axis.position]
+            self.controller.resize_board(drag.single, drag.axis, drag.side, delta)
+        elif drag.single is not None:
             moves: dict[Axis, tuple[str, float]] = {}
             start = self.controller.evaluation.boards[drag.single].origin
             for axis in AXES:

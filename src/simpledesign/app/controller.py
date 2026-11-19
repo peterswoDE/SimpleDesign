@@ -22,7 +22,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from simpledesign.core.io import sdz
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
-from simpledesign.core.model import arrange
+from simpledesign.core.model import arrange, transform
 from simpledesign.core.model.document import Document, ref_key
 from simpledesign.core.model.evaluate import Evaluation, Evaluator
 from simpledesign.core.model.joint import JointKind
@@ -460,6 +460,30 @@ class Controller(QObject):
         """Equal gaps between the objects, one undo step."""
         ids = list(ids)
         self.execute(self.tr("Verteilen"), lambda d: arrange.distribute(d, ids, axis))
+
+    def resize_board(self, board_id: str, axis: Axis, side: int, delta: float) -> bool:
+        """Move one face of a board (drag handle); False if not possible."""
+        evaluation = self.evaluation
+        try:
+            self.execute(
+                self.tr("Größe ändern"),
+                lambda d: transform.resize(d, evaluation, board_id, axis, side, delta),
+            )
+        except ValueError:
+            return False
+        return True
+
+    def rotate_board(self, board_id: str, axis: Axis, degrees: float) -> bool:
+        """Turn a board about its centre (rotate ring); False if not possible."""
+        evaluation = self.evaluation
+        try:
+            self.execute(
+                self.tr("Drehen"),
+                lambda d: transform.rotate(d, evaluation, board_id, axis, degrees),
+            )
+        except ValueError:
+            return False
+        return True
 
     # ================================================================== templates
     def free_position(self) -> tuple[float, float, float]:
