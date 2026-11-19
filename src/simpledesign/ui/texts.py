@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import QCoreApplication, QLocale
 
+from simpledesign.core.materials.edgeband import BandEdge
 from simpledesign.core.materials.material import MaterialKind
 from simpledesign.core.model.joint import JointKind
 from simpledesign.core.model.machining import Hardware, JointErrorCode
-from simpledesign.core.model.part import Axis, Orientation
+from simpledesign.core.model.part import Axis, Orientation, band_edge_side
 from simpledesign.core.params.errors import ErrorCode, FormulaError
 from simpledesign.core.params.expression import format_number
 
@@ -170,3 +171,22 @@ def hardware_label(item: Hardware) -> str:
     return _tr("{kind} {d} × {l} mm").format(
         kind=joint_kind_label(item.kind), d=number(item.diameter), l=number(item.length)
     )
+
+
+def side_label(axis: Axis, sign: int) -> str:
+    """Which side of the furniture a face looks to (Y runs backwards)."""
+    names = {
+        (Axis.X, -1): _tr("links"),
+        (Axis.X, 1): _tr("rechts"),
+        (Axis.Y, -1): _tr("vorne"),
+        (Axis.Y, 1): _tr("hinten"),
+        (Axis.Z, -1): _tr("unten"),
+        (Axis.Z, 1): _tr("oben"),
+    }
+    return names[axis, sign]
+
+
+def edge_label(orientation: Orientation, edge: BandEdge) -> str:
+    """E.g. "vorne (L1)": where the edge is on the furniture, and its code."""
+    side = side_label(*band_edge_side(orientation, edge))
+    return f"{side[:1].upper()}{side[1:]} ({edge.value.upper()})"

@@ -27,10 +27,10 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
+from simpledesign.core.cutlist.cutlist import cut_size
 from simpledesign.core.materials.material import Material
 from simpledesign.core.model.document import Document
 from simpledesign.core.model.evaluate import Evaluation
-from simpledesign.core.model.machining import local_shape
 from simpledesign.core.model.settings import CutSettings
 
 EPS = 1e-6
@@ -267,7 +267,7 @@ def pieces_by_material(doc: Document, evaluation: Evaluation) -> dict[str, list[
     result: dict[str, list[Piece]] = {}
     for board in doc.boards.values():
         for shape in evaluation.machining.parts[board.id]:
-            (length, width, _), _signature = local_shape(shape, board.orientation)
+            (length, width, _), _signature, _edges = cut_size(doc, board, shape)
             piece = Piece(board.name, length, width, doc.has_grain(board.id))
             result.setdefault(board.material_id, []).append(piece)
     return result

@@ -20,7 +20,13 @@ from PySide6.QtWidgets import (
 )
 
 from simpledesign.app.controller import Controller
-from simpledesign.core.cutlist.cutlist import CutRow, build_cutlist, to_csv
+from simpledesign.core.cutlist.cutlist import (
+    CutRow,
+    band_demand,
+    build_cutlist,
+    edges_summary,
+    to_csv,
+)
 from simpledesign.ui.texts import hardware_label, machining_text, number
 
 RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -32,11 +38,31 @@ class CutlistPanel(QWidget):
         self.controller = controller
         self.rows: list[CutRow] = []
 
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(self.headers())
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        edges_header = self.table.horizontalHeaderItem(6)
+        assert edges_header is not None
+        edges_header.setToolTip(
+            self.tr(
+                "Umleimer: L1/L2 = Längskanten, W1/W2 = Querkanten. "
+                "Länge und Breite sind schon um den Umleimer gekürzt (Rohmaß)."
+            )
+        )
+
+        # Edge banding: running metres per kind.
+        self.band_label = QLabel(self.tr("Umleimer"))
+        self.band_table = QTableWidget(0, 3)
+        self.band_table.setHorizontalHeaderLabels(
+            [self.tr("Laufmeter"), self.tr("Kanten"), self.tr("Umleimer")]
+        )
+        self.band_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.band_table.verticalHeader().setVisible(False)
+        self.band_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.band_table.setToolTip(self.tr("Je Kante 30 mm Überstand eingerechnet"))
+        self.band_table.setMaximumHeight(120)
 
         # Fittings (Beschläge) from the joints.
         self.hardware_label = QLabel(self.tr("Beschläge"))
@@ -62,6 +88,8 @@ class CutlistPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.table)
+        layout.addWidget(self.band_label)
+        layout.addWidget(self.band_table)
         layout.addWidget(self.hardware_label)
         layout.addWidget(self.hardware_table)
         layout.addLayout(bottom)
@@ -69,7 +97,7 @@ class CutlistPanel(QWidget):
         controller.document_changed.connect(self.refresh)
         self.refresh()
 
-    def headers(self) -> tuple[str, str, str, str, str, str, str]:
+    def headers(self) -> tuple[str, str, str, str, str, str, str, str]:
         return (
             self.tr("Anzahl"),
             self.tr("Länge"),
@@ -77,12 +105,17 @@ class CutlistPanel(QWidget):
             self.tr("Dicke"),
             self.tr("Material"),
             self.tr("Bearbeitung"),
+            self.tr("Kanten"),
             self.tr("Teile"),
         )
 
     @staticmethod
     def machining(row: CutRow) -> str:
         return machining_text(row.holes, row.cutouts)
+
+    @staticmethod
+    def edges(row: CutRow) -> str:
+        return edges_summary(row.edges)
 
     def refresh(self) -> None:
         self.rows = build_cutlist(self.controller.doc, self.controller.evaluation)
@@ -95,6 +128,7 @@ class CutlistPanel(QWidget):
                 number(row.thickness),
                 row.material,
                 self.machining(row),
+                self.edges(row),
                 ", ".join(row.names),
             )
             for c, text in enumerate(cells):
@@ -103,6 +137,18 @@ class CutlistPanel(QWidget):
                     item.setTextAlignment(RIGHT)
                 self.table.setItem(r, c, item)
         self.table.resizeColumnsToContents()
+        demand = band_demand(self.controller.doc, self.controller.evaluation)
+        self.band_table.setRowCount(len(demand))
+        for r, band in enumerate(demand):
+            metres = QTableWidgetItem(number(round(band.length / 1000, 2)))
+            metres.setTextAlignment(RIGHT)
+            count = QTableWidgetItem(str(band.edges))
+            count.setTextAlignment(RIGHT)
+            self.band_table.setItem(r, 0, metres)
+            self.band_table.setItem(r, 1, count)
+            self.band_table.setItem(r, 2, QTableWidgetItem(band.name))
+        self.band_label.setVisible(bool(demand))
+        self.band_table.setVisible(bool(demand))
         hardware = self.controller.evaluation.machining.hardware
         self.hardware_table.setRowCount(len(hardware))
         for r, fitting in enumerate(hardware):
@@ -127,7 +173,9 @@ class CutlistPanel(QWidget):
         try:
             # utf-8-sig: Excel only detects UTF-8 (umlauts) with a BOM.
             Path(path).write_text(
-                to_csv(self.rows, self.headers(), self.machining), encoding="utf-8-sig", newline=""
+                to_csv(self.rows, self.headers(), self.machining, self.edges),
+                encoding="utf-8-sig",
+                newline="",
             )
         except OSError as error:
             QMessageBox.critical(self, self.tr("Export"), str(error))

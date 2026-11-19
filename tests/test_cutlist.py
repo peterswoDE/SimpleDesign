@@ -6,7 +6,16 @@ from simpledesign.core.model.evaluate import Evaluator
 from simpledesign.core.model.part import Orientation
 from tests.furniture import build_korpus, param_id
 
-HEADERS = ("Anzahl", "Länge", "Breite", "Dicke", "Material", "Bearbeitung", "Teile")
+HEADERS = (
+    "Anzahl",
+    "Länge",
+    "Breite",
+    "Dicke",
+    "Material",
+    "Bearbeitung",
+    "Kanten",
+    "Teile",
+)
 
 
 def summary(doc: Document) -> list[tuple[int, float, float, float, str]]:
@@ -57,7 +66,7 @@ def test_csv_uses_semicolon_and_decimal_comma() -> None:
     board = doc.add_board("Brett")
     doc.set_expression(board.id, "length", "600.5")
     rows = build_cutlist(doc, Evaluator().evaluate(doc))
-    text = to_csv(rows, HEADERS, lambda row: f"{row.holes} B")
+    text = to_csv(rows, HEADERS, lambda row: f"{row.holes} B", lambda row: "")
     lines = text.splitlines()
-    assert lines[0] == "Anzahl;Länge;Breite;Dicke;Material;Bearbeitung;Teile"
-    assert lines[1] == "1;600,5;300;18;Multiplex Birke 18 mm;0 B;Brett"
+    assert lines[0] == "Anzahl;Länge;Breite;Dicke;Material;Bearbeitung;Kanten;Teile"
+    assert lines[1] == "1;600,5;300;18;Multiplex Birke 18 mm;0 B;;Brett"

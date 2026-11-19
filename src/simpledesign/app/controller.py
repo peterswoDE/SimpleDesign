@@ -21,6 +21,7 @@ from PySide6.QtCore import QObject, QStandardPaths, QTimer, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from simpledesign.core.io import sdz
+from simpledesign.core.materials.edgeband import BandEdge, EdgeBand
 from simpledesign.core.materials.library import LibraryError, MaterialLibrary
 from simpledesign.core.model import arrange, backpanel, fit, split, transform
 from simpledesign.core.model.document import Document, ref_key
@@ -234,6 +235,19 @@ class Controller(QObject):
                 d.set_material(board_id, material)
 
         self.execute(self.tr("Material ändern"), change)
+
+    def set_edge_band(
+        self, board_ids: Iterable[str], edges: Iterable[BandEdge], band: EdgeBand | str | None
+    ) -> None:
+        """Band the given edges (None: remove the banding)."""
+        ids = [i for i in board_ids if i in self.doc.boards]
+        edges = list(edges)
+
+        def change(d: Document) -> None:
+            for board_id in ids:
+                d.set_edge_band(board_id, edges, band)
+
+        self.execute(self.tr("Umleimer ändern"), change)
 
     def set_ignore_grain(self, board_ids: Iterable[str], ignore: bool) -> None:
         ids = [i for i in board_ids if i in self.doc.boards]

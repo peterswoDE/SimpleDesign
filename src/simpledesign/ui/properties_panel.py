@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from simpledesign.app.controller import Controller
+from simpledesign.core.materials.edgeband import BUILTIN_EDGE_BANDS, BandEdge
 from simpledesign.core.model import backpanel
 from simpledesign.core.model.part import (
     DIMENSIONS,
@@ -33,8 +34,17 @@ from simpledesign.core.model.part import (
 )
 from simpledesign.core.params.errors import FormulaError
 from simpledesign.ui import sketch_editor
+from simpledesign.ui.edgeband_dialog import EdgeBandDialog
 from simpledesign.ui.expression_field import ExpressionField
-from simpledesign.ui.texts import axis_label, error_message, orientation_label, property_label
+from simpledesign.ui.texts import (
+    axis_label,
+    edge_label,
+    error_message,
+    orientation_label,
+    property_label,
+)
+
+NEW_BAND = "__new__"  # combo entry: define an own edge band
 
 
 class PropertiesPanel(QScrollArea):
@@ -97,6 +107,7 @@ class PropertiesPanel(QScrollArea):
         self.orientation_combo.activated.connect(self._on_orientation)
         form.addRow(self.tr("Lage"), self.orientation_combo)
         layout.addWidget(general)
+        layout.addWidget(self._build_edges_box())
         layout.addWidget(self._build_back_box())
         layout.addWidget(self._build_sketch_box())
 
@@ -173,6 +184,69 @@ class PropertiesPanel(QScrollArea):
         form.addRow(self.tr("Gruppe"), self.group_name)
         self.group_page = page
         self.stack.addWidget(page)
+
+    def _build_edges_box(self) -> QGroupBox:
+        box = QGroupBox(self.tr("Kanten (Umleimer)"))
+        box.setToolTip(
+            self.tr(
+                "Länge und Breite sind Fertigmaße: im Zuschnitt wird die Dicke "
+                "des Umleimers abgezogen."
+            )
+        )
+        form = QFormLayout(box)
+        self.edge_combos: dict[BandEdge | None, QComboBox] = {}
+        self.edge_labels: dict[BandEdge, QLabel] = {}
+        for edge in (None, *BandEdge):
+            combo = QComboBox()
+            combo.activated.connect(lambda index, e=edge: self._on_edge_band(e, index))
+            self.edge_combos[edge] = combo
+            if edge is None:
+                form.addRow(self.tr("Alle Kanten"), combo)
+            else:
+                label = QLabel()
+                self.edge_labels[edge] = label
+                form.addRow(label, combo)
+        return box
+
+    def _refresh_edges(self, board_id: str) -> None:
+        doc = self.controller.doc
+        board = doc.boards[board_id]
+        bands = {b.id: b for b in BUILTIN_EDGE_BANDS} | doc.edge_bands
+        for edge, combo in self.edge_combos.items():
+            combo.clear()
+            if edge is None:
+                combo.addItem("–", None)  # mixed: nothing to apply
+            combo.addItem(self.tr("ohne"), "")
+            for band in sorted(bands.values(), key=lambda b: b.name):
+                combo.addItem(band.name, band.id)
+            combo.addItem(self.tr("Eigener Umleimer…"), NEW_BAND)
+            if edge is not None:
+                combo.setCurrentIndex(max(0, combo.findData(board.edges.get(edge, ""))))
+                self.edge_labels[edge].setText(edge_label(board.orientation, edge))
+        used = set(board.edges.values())
+        all_combo = self.edge_combos[None]
+        if not board.edges:
+            all_combo.setCurrentIndex(all_combo.findData(""))
+        elif len(board.edges) == len(BandEdge) and len(used) == 1:
+            all_combo.setCurrentIndex(all_combo.findData(used.pop()))
+        else:
+            all_combo.setCurrentIndex(0)
+
+    def _on_edge_band(self, edge: BandEdge | None, index: int) -> None:
+        board_id = self._single()
+        if board_id is None or self._updating:
+            return
+        combo = self.edge_combos[edge]
+        data = combo.itemData(index)
+        edges = list(BandEdge) if edge is None else [edge]
+        if data == NEW_BAND:
+            dialog = EdgeBandDialog(self)
+            if dialog.exec() != EdgeBandDialog.DialogCode.Accepted:
+                self.refresh()
+                return
+            self.controller.set_edge_band([board_id], edges, dialog.band())
+        elif data is not None:  # "" = without banding
+            self.controller.set_edge_band([board_id], edges, str(data) or None)
 
     def _build_back_box(self) -> QGroupBox:
         box = QGroupBox(self.tr("Rückwand"))
@@ -284,6 +358,7 @@ class PropertiesPanel(QScrollArea):
                 index = self.orientation_combo.findData(board.orientation.value)
                 self.orientation_combo.setCurrentIndex(index)
                 self._refresh_back(board.id)
+                self._refresh_edges(board.id)
                 axis_index = self.pattern_axis_combo.findData(board.pattern_axis.value)
                 self.pattern_axis_combo.setCurrentIndex(axis_index)
                 rotation_index = self.rotation_axis_combo.findData(board.rotation_axis.value)

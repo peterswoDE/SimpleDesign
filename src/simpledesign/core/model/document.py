@@ -19,6 +19,7 @@ import re
 from collections.abc import Iterable, Mapping
 
 from simpledesign.core.ids import new_id
+from simpledesign.core.materials.edgeband import BandEdge, EdgeBand, builtin_edge_band
 from simpledesign.core.materials.library import DEFAULT_MATERIAL_ID, builtin_material
 from simpledesign.core.materials.material import Material
 from simpledesign.core.model.joint import Joint, JointKind, default_params
@@ -81,6 +82,8 @@ class Document:
         self.boards: dict[str, Board] = {}
         # Copies of all materials used - the file stays readable without the library.
         self.materials: dict[str, Material] = {}
+        # Own edge bands and copies loaded from a file; built-ins are found anyway.
+        self.edge_bands: dict[str, EdgeBand] = {}
         self.joints: dict[str, Joint] = {}
         self.cut_settings = CutSettings()
 
@@ -355,6 +358,30 @@ class Document:
             if material_id not in used:
                 del self.materials[material_id]
 
+    def edge_band(self, band_id: str) -> EdgeBand:
+        """The document's band of that ID, else the built-in one (KeyError: unknown)."""
+        band = self.edge_bands.get(band_id) or builtin_edge_band(band_id)
+        if band is None:
+            raise KeyError(band_id)
+        return band
+
+    def set_edge_band(
+        self, board_id: str, edges: Iterable[BandEdge], band: EdgeBand | str | None
+    ) -> None:
+        """Band ``edges`` of the board with ``band`` (None: remove the banding)."""
+        if isinstance(band, EdgeBand):
+            if builtin_edge_band(band.id) != band:
+                self.edge_bands[band.id] = band
+            band = band.id
+        elif band is not None:
+            self.edge_band(band)  # KeyError for unknown bands
+        board = self.boards[board_id]
+        for edge in edges:
+            if band is None:
+                board.edges.pop(edge, None)
+            else:
+                board.edges[edge] = band
+
     def move_to_group(self, ids: Iterable[str], group_id: str | None) -> None:
         """Move boards, groups or parameters into ``group_id`` (None = top level)."""
         ids = list(ids)
@@ -535,6 +562,9 @@ class Document:
                 self.materials[board.material_id] = copy.deepcopy(
                     source.materials[board.material_id]
                 )
+            for band_id in board.edges.values():
+                if band_id not in self.edge_bands and band_id in source.edge_bands:
+                    self.edge_bands[band_id] = source.edge_bands[band_id]
             self.boards[board.id] = board
         # Joints between two copied boards are copied too.
         for joint in list(source.joints.values()):

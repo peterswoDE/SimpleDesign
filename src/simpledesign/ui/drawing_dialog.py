@@ -57,6 +57,7 @@ def drawing_labels() -> DrawingLabels:
         parts=_tr("Teile"),
         holes=_tr("Bohrungen"),
         hole_columns=(_tr("Nr"), _tr("X"), _tr("Y"), _tr("Z"), _tr("Ø"), _tr("Tiefe")),
+        edges=_tr("Kanten"),
     )
 
 

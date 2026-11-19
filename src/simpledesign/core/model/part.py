@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from simpledesign.core.materials.edgeband import BandEdge
 from simpledesign.core.sketch.model import Sketch
 
 
@@ -55,6 +56,12 @@ class Orientation(StrEnum):
         if axis == self.width_axis:
             return "width"
         return "thickness"
+
+
+def band_edge_side(orientation: Orientation, edge: BandEdge) -> tuple[Axis, int]:
+    """World axis and direction (-1/+1) the edge faces (unrotated part)."""
+    axis = orientation.length_axis if not edge.along_length else orientation.width_axis
+    return axis, 1 if edge.at_end else -1
 
 
 DIMENSIONS = ("length", "width", "thickness")
@@ -160,6 +167,8 @@ class Board:
     # Length and width then follow from the profile (bounding box).
     profile: Sketch | None = None
     cuts: list[SketchCut] = field(default_factory=list)
+    # Edge banding per edge: edge -> band id (see Document.edge_band).
+    edges: dict[BandEdge, str] = field(default_factory=dict)
 
     def sketches(self) -> list[tuple[str, Sketch]]:
         """(key, sketch) of the profile and every cut; keys as in Evaluation.sketches."""

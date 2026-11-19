@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from OCP.TopoDS import TopoDS_Shape
 
-from simpledesign.core.cutlist.cutlist import CutRow, build_cutlist
+from simpledesign.core.cutlist.cutlist import CutRow, build_cutlist, cut_size, edges_summary
 from simpledesign.core.drawing.projection import (
     STANDARD_VIEWS,
     Projection,
@@ -63,6 +63,7 @@ class DrawingLabels:
     parts: str  # used on the overview: number of parts
     holes: str  # hole table heading
     hole_columns: tuple[str, str, str, str, str, str]  # Nr, X, Y, Z, Ø, Tiefe
+    edges: str = "Kanten"  # edge banding field
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,12 +138,12 @@ def _row_shape(
         if board.name not in row.names or board.material_id != row.material_id:
             continue
         for shape in evaluation.machining.parts[board.id]:
-            (length, width, thickness), _sig = local_shape(shape, board.orientation)
-            dims = sorted((length, width), reverse=True) if not row.has_grain else [length, width]
+            (length, width, thickness), _sig, edges = cut_size(doc, board, shape)
             if (
-                abs(dims[0] - row.length) < 0.06
-                and abs(dims[1] - row.width) < 0.06
+                abs(length - row.length) < 0.06
+                and abs(width - row.width) < 0.06
                 and abs(thickness - row.thickness) < 0.06
+                and edges == row.edges
             ):
                 return shape, board.orientation
     return None
@@ -204,6 +205,8 @@ def part_sheet(
         (labels.quantity, str(row.quantity)),
         (labels.size, size),
     ]
+    if row.edges:
+        sheet.fields.append((labels.edges, edges_summary(row.edges)))
     holes = [f for f in shape.features if isinstance(f, Hole)]
     face_place = _place_three_views(
         sheet,
@@ -217,7 +220,43 @@ def part_sheet(
     )
     if holes:
         _hole_table(sheet, labels, holes, face, face_place, shape.size, swap, orientation)
+    _edge_marks(sheet, row, shape, face, face_place)
     return sheet
+
+
+EDGE_MARK_GAP = 1.5  # paper mm between the part outline and a banding mark
+
+
+def _edge_marks(
+    sheet: Sheet, row: CutRow, shape: PartShape, face: View, place: ViewPlacement
+) -> None:
+    """A thick line beside every banded edge of the face view."""
+    if not row.edges:
+        return
+    corners = [
+        face.to_2d(
+            (
+                shape.origin[0] + i * shape.size[0],
+                shape.origin[1] + j * shape.size[1],
+                shape.origin[2] + k * shape.size[2],
+            )
+        )
+        for i in (0, 1)
+        for j in (0, 1)
+        for k in (0, 1)
+    ]
+    us = [place.offset[0] + u * place.scale for u, _v in corners]
+    vs = [place.offset[1] + v * place.scale for _u, v in corners]
+    u0, u1, v0, v1 = min(us), max(us), min(vs), max(vs)
+    g = EDGE_MARK_GAP
+    lines = {
+        "l1": ((u0, v0 - g), (u1, v0 - g)),
+        "l2": ((u0, v1 + g), (u1, v1 + g)),
+        "w1": ((u0 - g, v0), (u0 - g, v1)),
+        "w2": ((u1 + g, v0), (u1 + g, v1)),
+    }
+    for edge, _name in row.edges:
+        sheet.items.append(Polyline(lines[edge.value], Style.VISIBLE))
 
 
 def _hole_table(

@@ -14,6 +14,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from simpledesign.core.materials.edgeband import (
+    BandEdge,
+    edge_band_from_dict,
+    edge_band_to_dict,
+)
 from simpledesign.core.materials.library import BUILTIN_MATERIALS
 from simpledesign.core.materials.material import material_from_dict, material_to_dict
 from simpledesign.core.model.document import Document
@@ -113,10 +118,13 @@ def to_dict(doc: Document) -> Json:
                     }
                     for c in b.cuts
                 ],
+                "edges": {edge.value: band for edge, band in b.edges.items()},
             }
             for b in doc.boards.values()
         ],
         "materials": [material_to_dict(m) for m in doc.materials.values()],
+        # own bands and every band in use: the file stays readable on its own
+        "edge_bands": [edge_band_to_dict(doc.edge_band(i)) for i in _band_ids(doc)],
         "joints": [
             {
                 "id": j.id,
@@ -134,6 +142,11 @@ def to_dict(doc: Document) -> Json:
     }
 
 
+def _band_ids(doc: Document) -> list[str]:
+    used = {band for b in doc.boards.values() for band in b.edges.values()}
+    return sorted(used | doc.edge_bands.keys())
+
+
 def from_dict(data: Json) -> Document:
     data = migrate(data)
     doc = Document()
@@ -141,6 +154,9 @@ def from_dict(data: Json) -> Document:
         for m in data["materials"]:
             material = material_from_dict(m)
             doc.materials[material.id] = material
+        for e in data.get("edge_bands", []):
+            band = edge_band_from_dict(e)
+            doc.edge_bands[band.id] = band
         settings = data["cut_settings"]
         doc.cut_settings = CutSettings(
             kerf=float(settings["kerf"]),
@@ -181,6 +197,7 @@ def from_dict(data: Json) -> Document:
                     )
                     for c in b.get("cuts", [])
                 ],
+                edges={BandEdge(k): str(v) for k, v in b.get("edges", {}).items()},
             )
         for j in data["joints"]:
             kind = JointKind(j["kind"])
@@ -204,6 +221,11 @@ def _check_references(doc: Document) -> None:
     for b in doc.boards.values():
         if b.material_id not in doc.materials:
             raise FileFormatError(f"board {b.id} has an unknown material")
+        for band_id in b.edges.values():
+            try:
+                doc.edge_band(band_id)
+            except KeyError:
+                raise FileFormatError(f"board {b.id} has an unknown edge band") from None
     for j in doc.joints.values():
         if j.main_id not in doc.boards or j.attached_id not in doc.boards:
             raise FileFormatError(f"joint {j.id} refers to an unknown board")
