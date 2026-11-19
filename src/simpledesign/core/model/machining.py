@@ -268,8 +268,20 @@ class _Extension:
     length: float
 
 
-# A hole, a group of features that form one operation (groove, tenon …), or an extension.
-type _Op = tuple[_Instance, Hole | tuple[Feature, ...] | _Extension]
+@dataclass(frozen=True, slots=True)
+class _GrooveSpan:
+    """After all extensions: the groove ``cutout`` must hold the attached part
+    over its full rough length along ``axis`` (it may reach into other grooves,
+    e.g. a back panel into the grooves of bottom and top)."""
+
+    cutout: Cutout
+    attached: _Instance
+    axis: int
+
+
+# A hole, a group of features that form one operation (groove, tenon …), an
+# extension, or a groove to widen later.
+type _Op = tuple[_Instance, Hole | tuple[Feature, ...] | _Extension | _GrooveSpan]
 
 
 def _span(lo: list[float], hi: list[float], axis: int, a: float, b: float) -> None:
@@ -368,9 +380,12 @@ def _plan_groove(
             lo[t] = main.lo[t]
     lo = [max(lo[i], main.lo[i]) for i in range(3)]
     hi = [min(hi[i], main.hi[i]) for i in range(3)]
+    cutout = Cutout(_vec(lo), _vec(hi))
+    along = 3 - k - t  # the groove's length direction
     return [
-        (main, (Cutout(_vec(lo), _vec(hi)),)),
+        (main, (cutout,)),
         (attached, _Extension(k, c.side, depth - play)),
+        (main, _GrooveSpan(cutout, attached, along)),
     ]
 
 
@@ -486,8 +501,21 @@ def _plan_corner(
     ]
 
 
+def _widen(main: _Instance, span: _GrooveSpan) -> None:
+    """Let the groove run as far as the attached part's rough size (inside main)."""
+    i, a = span.axis, span.attached
+    lo, hi = list(span.cutout.lo), list(span.cutout.hi)
+    lo[i] = max(min(lo[i], a.lo[i] - a.ext_lo[i]), main.lo[i])
+    hi[i] = min(max(hi[i], a.hi[i] + a.ext_hi[i]), main.hi[i])
+    wide = Cutout(_vec(lo), _vec(hi))
+    if wide != span.cutout and span.cutout in main.features:
+        main.features[main.features.index(span.cutout)] = wide
+
+
 def _apply(op: _Op) -> None:
     instance, what = op
+    if isinstance(what, _GrooveSpan):
+        return  # after all joints, see _widen
     if isinstance(what, _Extension):
         # side > 0: the attached part lies above the main part -> grows downwards.
         target = instance.ext_lo if what.side > 0 else instance.ext_hi
@@ -538,6 +566,7 @@ def compute_machining(
                 instance.cut_operations += sketch.cut
     result = Machining()
     fittings: dict[tuple[JointKind, float, float], int] = {}
+    spans: list[tuple[_Instance, _GrooveSpan]] = []
     for joint in doc.joints.values():
         if joint.main_id not in boards or joint.attached_id not in boards:
             continue
@@ -566,9 +595,13 @@ def compute_machining(
             continue
         for op in ops:
             _apply(op)
+            if isinstance(op[1], _GrooveSpan):
+                spans.append((op[0], op[1]))
         if count:
             key = (joint.kind, joint.param("diameter"), joint.param("length"))
             fittings[key] = fittings.get(key, 0) + count
+    for main, span in spans:
+        _widen(main, span)
     result.parts = {
         board_id: [_rotated(i.shape(), boards[board_id]) for i in items]
         for board_id, items in instances.items()

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QStyle,
     QToolBar,
+    QToolButton,
     QWidget,
 )
 
@@ -335,6 +336,18 @@ class MainWindow(QMainWindow):
         self.action_xray.setToolTip(self.tr("Alle nicht ausgewählten Teile durchsichtig"))
         self.action_xray.toggled.connect(lambda on: setattr(self.scene, "xray", on))
         self.scene.view_mode_changed.connect(self._sync_view_modes)
+        self.action_collisions = QAction(self.tr("&Kollisionen"), self)
+        self.action_collisions.setCheckable(True)
+        self.action_collisions.setShortcut(QKeySequence("K"))
+        self.action_collisions.setToolTip(
+            self.tr(
+                "Überschneidende Teile rot anzeigen (Verbindungen wie Nut oder Zapfen zählen nicht)"
+            )
+        )
+        self.action_collisions.toggled.connect(
+            lambda on: setattr(self.scene, "show_collisions", on)
+        )
+        self.scene.collisions_changed.connect(self._report_collisions)
 
         self.action_fit = QAction(self.tr("Alles &zeigen"), self)
         self.action_fit.setShortcut(QKeySequence("F6"))
@@ -407,7 +420,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.action_rotate_mode)
         view_menu.addActions([self.action_measure, self.action_measure_points])
         view_menu.addSeparator()
-        view_menu.addActions([self.action_isolate, self.action_xray])
+        view_menu.addActions([self.action_isolate, self.action_xray, self.action_collisions])
         view_menu.addSeparator()
         for dock in (
             self.library_dock,
@@ -445,6 +458,7 @@ class MainWindow(QMainWindow):
                     self.action_insert_template,
                 ],
             ),
+            ("check", self.tr("Prüfen"), [self.action_collisions]),
             None,  # second row
             (
                 "fit",
@@ -495,6 +509,11 @@ class MainWindow(QMainWindow):
                 toolbar.addAction(action)
                 show_shortcut(action)
             self.toolbars[name] = toolbar
+        # undo/redo arrows speak for themselves (tooltip names them): room for more
+        for action in (self.action_undo, self.action_redo):
+            button = self.toolbars["edit"].widgetForAction(action)
+            if isinstance(button, QToolButton):
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
 
     # ------------------------------------------------------------------ editing
     def _target_group(self) -> str | None:
@@ -635,10 +654,25 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(self.tr("Zum Isolieren erst Teile auswählen"), 5000)
         self.scene.isolate(boards)
 
+    def _report_collisions(self) -> None:
+        if not self.scene.show_collisions:
+            return
+        found = self.scene.collisions
+        if not found:
+            self.statusBar().showMessage(self.tr("Keine Überschneidungen"), 5000)
+            return
+        boards = self.controller.doc.boards
+        pairs = sorted({f"{boards[c.first].name} ↔ {boards[c.second].name}" for c in found})
+        text = ", ".join(pairs[:4]) + (" …" if len(pairs) > 4 else "")
+        self.statusBar().showMessage(
+            self.tr("Überschneidungen ({0}): {1}").format(len(found), text)
+        )
+
     def _sync_view_modes(self) -> None:
         for action, on in (
             (self.action_isolate, self.scene.isolated),
             (self.action_xray, self.scene.xray),
+            (self.action_collisions, self.scene.show_collisions),
         ):
             action.blockSignals(True)
             action.setChecked(on)

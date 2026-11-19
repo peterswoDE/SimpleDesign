@@ -36,6 +36,7 @@ from vtkmodules.vtkRenderingCore import (
 
 from simpledesign.app.controller import Controller
 from simpledesign.app.snapping import SnapTarget, Vec3, axis_parameter, best_snap, snap_targets
+from simpledesign.core.geometry.collision import Collision, find_collisions
 from simpledesign.core.geometry.mesh import part_mesh
 from simpledesign.core.geometry.placement import world_bounds
 from simpledesign.core.model import fit, transform
@@ -58,6 +59,7 @@ RING_SAMPLES = 72
 ROTATE_STEP = 15.0  # degrees (Shift: 1°)
 RING_EDGE_ON = 0.25  # |view · axis| below this: ring seen edge-on, use screen angle
 SELECTION_COLOR = "#2f7de1"
+COLLISION_COLOR = "#e02020"
 EDGE_COLOR = "#4b4136"
 TRANSPARENT_OPACITY = 0.3
 AXIS_COLORS = {Axis.X: "#d64545", Axis.Y: "#3fa34d", Axis.Z: "#3b6fd6"}
@@ -140,6 +142,7 @@ class Scene(QObject):
     view_mode_changed = Signal()  # isolation or X-ray switched
     # Right click at a viewport position (logical pixels from the top-left).
     context_menu_requested = Signal(int, int)
+    collisions_changed = Signal()  # the set of overlapping parts changed
 
     def __init__(self, viewport: Viewport, controller: Controller) -> None:
         super().__init__(viewport)
@@ -171,6 +174,9 @@ class Scene(QObject):
         self._isolated: set[str] | None = None
         self._known: set[str] = set()
         self._xray = False
+        self._show_collisions = False
+        self.collisions: list[Collision] = []
+        self._collision_key: tuple[int, frozenset[str]] | None = None
 
         self._create_overlay()
         viewport.interaction_style.pointer_handler = self
@@ -241,6 +247,48 @@ class Scene(QObject):
             self.rebuild()
             self.view_mode_changed.emit()
 
+    @property
+    def show_collisions(self) -> bool:
+        return self._show_collisions
+
+    @show_collisions.setter
+    def show_collisions(self, on: bool) -> None:
+        if on != self._show_collisions:
+            self._show_collisions = on
+            self._collision_key = None
+            self.rebuild()
+            self.view_mode_changed.emit()
+
+    def _update_collisions(self, visible: set[str]) -> None:
+        """Recompute the overlaps of the visible parts and show them in red."""
+        if not self._show_collisions:
+            self._collision_actor.VisibilityOff()
+            if self.collisions:
+                self.collisions = []
+                self.collisions_changed.emit()
+            return
+        evaluation = self.controller.evaluation
+        key = (id(evaluation), frozenset(visible))
+        if key == self._collision_key:
+            return
+        first = self._collision_key is None  # just switched on: always report
+        self._collision_key = key
+        parts = {b: evaluation.machining.parts[b] for b in visible}
+        found = find_collisions(parts)
+        changed = [(c.first, c.second) for c in found] != [
+            (c.first, c.second) for c in self.collisions
+        ]
+        self.collisions = found
+        if found:
+            meshes = [pv.PolyData(c.mesh.points, c.mesh.faces) for c in found]
+            merged = meshes[0] if len(meshes) == 1 else pv.merge(meshes)
+            self._collision_mapper.SetInputData(merged)
+            self._collision_actor.VisibilityOn()
+        else:
+            self._collision_actor.VisibilityOff()
+        if changed or first:
+            self.collisions_changed.emit()
+
     def rebuild(self) -> None:
         self._board_actors = {}
         used = 0
@@ -296,6 +344,7 @@ class Scene(QObject):
                 self.renderer.RemoveActor(face)
                 self.renderer.RemoveActor(edge)
             del self._pool[used:]
+        self._update_collisions(set(self._board_actors))
         self._place_gizmo()
         self.viewport.render()
 
@@ -388,6 +437,17 @@ class Scene(QObject):
         assert render_window is not None
         render_window.SetNumberOfLayers(2)
         render_window.AddRenderer(self.overlay)
+
+        # Overlapping volumes: drawn on top so they show inside the parts.
+        self._collision_mapper = vtkPolyDataMapper()
+        self._collision_actor = vtkActor()
+        self._collision_actor.SetMapper(self._collision_mapper)
+        self._collision_actor.PickableOff()
+        self._collision_actor.VisibilityOff()
+        collision_prop = self._collision_actor.GetProperty()
+        collision_prop.SetColor(*_rgb(COLLISION_COLOR))
+        collision_prop.SetOpacity(0.7)
+        self.overlay.AddActor(self._collision_actor)
 
         self._arrows: dict[Axis, vtkActor] = {}
         for axis, direction in UNIT.items():

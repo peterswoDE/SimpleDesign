@@ -284,7 +284,7 @@ Nur Politur, keine neuen Großfunktionen.
 Ergebnis eines Vergleichs mit Fusion, SketchUp/OpenCutList, Polyboard, Cabinet Vision und Mozaik. Reihenfolge = Umsetzungsreihenfolge, jedes Werkzeug ein eigener Commit.
 
 **Hoher Nutzen**
-1. **Kollisionsprüfung** – Teile, die sich überschneiden, werden rot hervorgehoben und aufgelistet (Menü + dauerhafte Anzeige abschaltbar). Gewollte Überlappungen durch Verbindungen (Nut, Falz, Zapfen …) zählen nicht: geprüft wird die bearbeitete Geometrie.
+1. ✅ **Kollisionsprüfung** – Teile, die sich überschneiden, werden rot hervorgehoben und aufgelistet (Menü + dauerhafte Anzeige abschaltbar). Gewollte Überlappungen durch Verbindungen (Nut, Falz, Zapfen …) zählen nicht: geprüft wird die bearbeitete Geometrie. *Umgesetzt:* Ansicht → Kollisionen (K), Gruppe „Prüfen“; Überschneidungsvolumen rot über den Teilen, Paare in der Statuszeile. Dabei behoben: abgesetzte Nuten der Seiten reichen jetzt über die ganze Rückwand (Ecken überschnitten sich).
 2. **Kantenumleimer** – je Brettkante (vorne/hinten/links/rechts) Umleimer mit Material und Dicke; Zuschnittliste: Rohmaß = Fertigmaß minus Umleimer, Laufmeter je Umleimer-Material, Kantensymbole in Zeichnung und Etikett.
 3. **Türen- und Schubladen-Generator** – Einpassen-Werkzeuge wie Trennwand/Fachboden: Fach anklicken → Tür (aufliegend/einliegend, Fuge, ein-/zweiflügelig) bzw. Schublade (Front, Zarge, Boden, Auszugsluft), per Formel an das Fach gebunden.
 4. **Beschläge mit Bohrbild** – Topfband 35 mm mit Montageplatte, Lochreihe System 32 für Bodenträger, Schubladenauszüge; Bohrungen erscheinen in 3D, Zeichnung, Bohrtabelle und Beschläge-Liste.
