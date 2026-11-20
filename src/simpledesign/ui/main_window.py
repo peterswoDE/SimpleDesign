@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSettings, Qt
+from PySide6.QtCore import QPoint, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -177,17 +177,30 @@ class MainWindow(QMainWindow):
         # 3D view; another tab gives the old size back.
         self._list_docks_shown: set[QDockWidget] = set()
         self._lists_maximized: _ListLayout | None = None
+        self._central_update_pending = False
         for dock in (self.cutlist_dock, self.cutplan_dock):
             dock.visibilityChanged.connect(
                 lambda visible, d=dock: self._list_dock_visibility(d, visible)
             )
-            dock.topLevelChanged.connect(lambda _floating: self._update_central())
+            dock.topLevelChanged.connect(lambda _floating: self._schedule_update_central())
 
     def _list_dock_visibility(self, dock: QDockWidget, visible: bool) -> None:
         if visible:
             self._list_docks_shown.add(dock)
         else:
             self._list_docks_shown.discard(dock)
+        self._schedule_update_central()
+
+    def _schedule_update_central(self) -> None:
+        # once the tab switch is over: from one list tab to the other, Qt hides
+        # the old tab before it shows the new one, which must not restore the
+        # 3D view in between
+        if not self._central_update_pending:
+            self._central_update_pending = True
+            QTimer.singleShot(0, self._run_update_central)
+
+    def _run_update_central(self) -> None:
+        self._central_update_pending = False
         self._update_central()
 
     def _shown_list_dock(self) -> QDockWidget | None:

@@ -26,10 +26,18 @@ def test_lists_take_the_room_of_the_3d_view(qtbot: QtBot) -> None:
         assert not win.properties_dock.isVisible()  # side panels make room too
         win.cutlist_dock.raise_()
         qtbot.waitUntil(lambda: win.cutlist_dock.height() > normal_dock + normal_view - 30)
+        # from one list tab to the other: no 3D view in between
+        win.cutplan_dock.raise_()
+        qtbot.wait(100)
+        assert win.lists_maximized()
+        assert win.cutplan_dock.height() > normal_dock + normal_view - 30
+        assert not win.viewport.geometry().intersects(win.rect())
+        assert not win.properties_dock.isVisible()
         # back to the parameters: the 3D view gets its room back
         win.parameters_dock.raise_()
-        qtbot.waitUntil(lambda: win.viewport.height() > normal_view - 10)
-        assert not win.lists_maximized() and win.viewport.isVisible()
+        qtbot.waitUntil(lambda: not win.lists_maximized())
+        assert win.viewport.geometry().intersects(win.rect())
+        assert win.viewport.height() > normal_view - 10
         assert win.properties_dock.isVisible()
         assert win.viewport.minimumSize().toTuple() == (320, 200)  # never squeezed away
         assert abs(win.parameters_dock.height() - normal_dock) < 10
